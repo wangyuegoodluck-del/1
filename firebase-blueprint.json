@@ -1,0 +1,27 @@
+{
+  "entities": {
+    "Customer": {
+      "title": "Customer",
+      "description": "Information about Party A (Buyer) for contract generation.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "description": "Unique identifier for the customer." },
+        "name": { "type": "string", "description": "Official company name." },
+        "taxId": { "type": "string", "description": "Unified Social Credit Code / Tax ID." },
+        "address": { "type": "string", "description": "Registered address." },
+        "phone": { "type": "string", "description": "Contact phone number." },
+        "bank": { "type": "string", "description": "Bank name." },
+        "account": { "type": "string", "description": "Bank account number." },
+        "lastUsed": { "type": "string", "format": "date-time", "description": "The last time this customer was used." },
+        "uid": { "type": "string", "description": "The UID of the user who created this customer record." }
+      },
+      "required": ["name", "taxId", "uid"]
+    }
+  },
+  "firestore": {
+    "customers": {
+      "schema": "Customer",
+      "description": "A collection of customers for auto-filling contract details."
+    }
+  }
+}

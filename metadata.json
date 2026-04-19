@@ -1,0 +1,5 @@
+{
+  "name": "法奥机器人 · 智能合同系统",
+  "description": "法奥机器人智能合同生成系统，支持营业执照 OCR 识别、AI 智能校验及多种类合同自动生成。",
+  "requestFramePermissions": []
+}

@@ -1,0 +1,24 @@
+{
+  "name": "法奥机器人 · 智能合同系统",
+  "short_name": "法奥合同",
+  "description": "法奥机器人智能合同生成系统，支持识别、校验及合同生成。",
+  "start_url": "./",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#2563eb",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "https://picsum.photos/seed/fairo/192/192",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "https://picsum.photos/seed/fairo/512/512",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
