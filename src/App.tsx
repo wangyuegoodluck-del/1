@@ -576,6 +576,11 @@ export default function App() {
                       </div>
                       {/* 模式切换 Tab */}
                       <div className="flex items-center gap-1 bg-white rounded-lg p-1 border border-blue-100">
+                        {/* 环境变量状态指示器 */}
+                        <div className="mr-2 px-2 py-1 rounded-md bg-slate-100 flex items-center gap-1.5 grayscale hover:grayscale-0 transition-all cursor-default" title={import.meta.env.VITE_TENCENT_SECRET_ID ? "API 密钥已配置" : "API 密钥未配置"}>
+                          <div className={`w-1.5 h-1.5 rounded-full ${import.meta.env.VITE_TENCENT_SECRET_ID ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+                          <span className="text-[10px] font-bold text-slate-500">API {import.meta.env.VITE_TENCENT_SECRET_ID ? 'READY' : 'MISSING'}</span>
+                        </div>
                         <button
                           onClick={() => setIdentifyMode('image')}
                           className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-all ${
