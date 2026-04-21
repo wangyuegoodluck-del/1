@@ -76,26 +76,6 @@ export default function App() {
     equipmentDeposit: 0
   });
 
-  // 诊断信息：帮助验证部署环境
-  useEffect(() => {
-    console.log('--- System Diagnostic ---');
-    console.log('User status:', user ? 'Logged in' : 'Not logged in');
-    console.log('Admin status:', isAdmin);
-    console.log('Tencent ID Configured:', !!import.meta.env.VITE_TENCENT_SECRET_ID);
-    console.log('--- End Diagnostic ---');
-  }, [user, isAdmin]);
-
-  const [isGenerating, setIsGenerating] = useState(false);
-  const [isIdentifying, setIsIdentifying] = useState(false);
-  const [identifyError, setIdentifyError] = useState('');
-  const [showTemplateSettings, setShowTemplateSettings] = useState(false);
-  const [step, setStep] = useState(1);
-  const [ocrSummary, setOcrSummary] = useState('');
-  const [verifySummary, setVerifySummary] = useState<React.ReactNode>('');
-  // 识别模式：'image'=图片上传  'text'=文字粘贴
-  const [identifyMode, setIdentifyMode] = useState<'image' | 'text'>('image');
-  const [pasteText, setPasteText] = useState('');
-  
   // Auth & Memory State
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
@@ -109,6 +89,26 @@ export default function App() {
   const [isParsingContact, setIsParsingContact] = useState(false);
   // 产品目录
   const [catalogProducts, setCatalogProducts] = useState<CatalogProduct[]>([]);
+
+  const [isGenerating, setIsGenerating] = useState(false);
+  const [isIdentifying, setIsIdentifying] = useState(false);
+  const [identifyError, setIdentifyError] = useState('');
+  const [showTemplateSettings, setShowTemplateSettings] = useState(false);
+  const [step, setStep] = useState(1);
+  const [ocrSummary, setOcrSummary] = useState('');
+  const [verifySummary, setVerifySummary] = useState<React.ReactNode>('');
+  // 识别模式：'image'=图片上传  'text'=文字粘贴
+  const [identifyMode, setIdentifyMode] = useState<'image' | 'text'>('image');
+  const [pasteText, setPasteText] = useState('');
+
+  // 诊断信息：帮助验证部署环境
+  useEffect(() => {
+    console.log('--- System Diagnostic ---');
+    console.log('User status:', user ? 'Logged in' : 'Not logged in');
+    console.log('Admin status:', isAdmin);
+    console.log('Tencent ID Configured:', !!import.meta.env.VITE_TENCENT_SECRET_ID);
+    console.log('--- End Diagnostic ---');
+  }, [user, isAdmin]);
 
   useEffect(() => {
     if (!user) {
