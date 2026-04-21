@@ -613,19 +613,20 @@ export default function App() {
                           {isIdentifying ? (
                             <div className="flex flex-col items-center gap-2">
                               <Loader2 className="w-8 h-8 text-blue-600 animate-spin" />
-                              <span className="text-xs font-medium text-blue-600">正在识别营业执照...</span>
+                              <span className="text-xs font-bold text-blue-600">正在智能解析中...</span>
+                              <span className="text-[10px] text-blue-400 animate-pulse">检测到非标证照，正在启动混元 AI 深度提取</span>
                             </div>
                           ) : (
                             <div className="flex flex-col items-center gap-2">
                               <div className="p-3 bg-blue-50 rounded-full group-hover:scale-110 transition-transform">
                                 <Upload className="w-6 h-6 text-blue-600" />
                               </div>
-                              <span className="text-xs font-medium text-slate-500">点击上传营业执照照片（自动识别企业信息）</span>
+                              <span className="text-xs font-medium text-slate-500">点击上传图片（支持营业执照、开票资料截图、名片等）</span>
                             </div>
                           )}
                         </div>
                         <p className="text-[10px] text-slate-400 mt-3 flex items-center gap-1">
-                          <CheckCircle2 className="w-3 h-3" /> 上传清晰的营业执照照片，自动提取公司全称、税号、地址等信息
+                          <CheckCircle2 className="w-3 h-3" /> 支持识别营业执照、开票资料截图，自动提取公司全称、税号、银行账号等
                         </p>
                         {identifyError && (
                           <div className="mt-2 px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-xs text-red-600 flex items-start gap-2">

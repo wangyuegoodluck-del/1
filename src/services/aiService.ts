@@ -20,7 +20,29 @@ export interface IdentifiedParty {
   verifyResult?: HunyuanVerifyResult;
 }
 
-// ─── 1. 专用营业执照识别（高准确率）────────────────────────────────────
+// ─── 1. 通用文字识别（fallback） ────────────────────────────────────
+
+async function ocrGeneral(base64: string): Promise<string> {
+  const imageBase64 = base64.includes(',') ? base64.split(',')[1] : base64;
+
+  const resp = await tencentRequest({
+    secretId: SECRET_ID,
+    secretKey: SECRET_KEY,
+    service: 'ocr',
+    action: 'GeneralBasicOCR',
+    version: '2018-11-19',
+    region: 'ap-guangzhou',
+    payload: {
+      ImageBase64: imageBase64,
+    },
+  }) as {
+    TextDetections?: { DetectedText?: string }[];
+  };
+
+  return (resp.TextDetections || []).map(d => d.DetectedText).join('\n');
+}
+
+// ─── 2. 专用营业执照识别（高准确率）────────────────────────────────────
 
 async function ocrBizLicense(base64: string): Promise<IdentifiedParty> {
   const imageBase64 = base64.includes(',') ? base64.split(',')[1] : base64;
@@ -138,6 +160,10 @@ async function parseTextByHunyuan(text: string): Promise<IdentifiedParty> {
     }
   } catch (err) {
     console.error('混元文字解析失败:', err);
+    if (err instanceof Error) {
+      // 这里的 err 可能是 tencentRequest 抛出的详细错误
+      throw new Error(`AI 解析失败: ${err.message}`);
+    }
     throw new Error('AI 文字解析失败，请检查网络或稍后重试');
   }
 
@@ -195,10 +221,31 @@ export const identifyPartyA = async (
       return result;
     }
 
-    // 图片模式：专用营业执照 OCR
-    const result = await ocrBizLicense(input.data);
+    // 图片模式：先尝试专用营业执照 OCR
+    let result: IdentifiedParty;
+    try {
+      console.log('尝试专用营业执照 OCR...');
+      result = await ocrBizLicense(input.data);
+    } catch (error: unknown) {
+      // 记录原始错误
+      console.warn('专用 OCR 识别失败或非标准证照，正在启动通用解析 + 混元智能提取...', error);
+      
+      try {
+        const fullText = await ocrGeneral(input.data);
+        if (!fullText.trim()) {
+          throw new Error('未能识别图中文字，请确保图片清晰');
+        }
+        console.log('通用 OCR 提取成功，正在应用混元 AI 语义分析...');
+        result = await parseTextByHunyuan(fullText);
+      } catch (fallbackError: unknown) {
+        // 如果二次识别也失败，抛出最初的 OCR 错误
+        console.error('OCR智能补救识别失败:', fallbackError);
+        throw error;
+      }
+    }
+
     if (!result.name && !result.taxId) {
-      throw new Error('未识别到有效营业执照信息，请确认图片为清晰的营业执照照片');
+      throw new Error('未识别到有效企业信息，请确认图片包含公司全称或社会信用代码');
     }
 
     // 自动调用混元AI校验

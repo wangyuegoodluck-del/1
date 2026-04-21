@@ -48,9 +48,7 @@ export async function tencentRequest(opts: TencentRequestOptions): Promise<unkno
   const { secretId, secretKey, service, action, version, region = 'ap-guangzhou', payload } = opts;
 
   const host = `${service}.tencentcloudapi.com`;
-  // 开发环境使用 Vite 代理，生产环境直接调用
-  const isDev = typeof window !== 'undefined' && window.location.hostname === 'localhost';
-  const endpoint = isDev ? `/api/${service}` : `https://${host}`;
+  const endpoint = `https://${host}`;
   const timestamp = Math.floor(Date.now() / 1000);
   const date = new Date(timestamp * 1000).toISOString().slice(0, 10);
 
@@ -87,19 +85,27 @@ export async function tencentRequest(opts: TencentRequestOptions): Promise<unkno
   // 4. 拼接 Authorization
   const authorization = `TC3-HMAC-SHA256 Credential=${secretId}/${credentialScope}, SignedHeaders=content-type;host, Signature=${signature}`;
 
-  const response = await fetch(endpoint, {
+  const response = await fetch('/api/tencent-proxy', {
     method: 'POST',
     headers: {
-      'Content-Type': 'application/json; charset=utf-8',
-      'Host': host,
-      'Authorization': authorization,
-      'X-TC-Action': action,
-      'X-TC-Version': version,
-      'X-TC-Timestamp': String(timestamp),
-      'X-TC-Region': region,
+      'Content-Type': 'application/json',
     },
-    body: payloadStr,
+    body: JSON.stringify({
+      endpoint,
+      host,
+      authorization,
+      action,
+      version,
+      timestamp,
+      region,
+      payload,
+    }),
   });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`网络请求失败 (${response.status}): ${errorText || '请检查后端连接'}`);
+  }
 
   const json = await response.json();
   if (json.Response?.Error) {
