@@ -5,6 +5,9 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>法奥机器人 · 智能合同系统</title>
+    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate" />
+    <meta http-equiv="Pragma" content="no-cache" />
+    <meta http-equiv="Expires" content="0" />
     <link rel="manifest" href="/manifest.json" />
     <meta name="theme-color" content="#2563eb" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
@@ -16,12 +19,21 @@
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
     <script>
+      // 解决需要强制刷新才能看到更新的问题
       if ('serviceWorker' in navigator) {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker.register('/sw.js')
-            .then(reg => console.log('SW registered'))
-            .catch(err => console.log('SW registration failed', err));
+        navigator.serviceWorker.getRegistrations().then(function(registrations) {
+          for(let registration of registrations) {
+            registration.unregister();
+            console.log('SW unregistered');
+          }
         });
+        
+        // 清理所有缓存
+        if (window.caches) {
+          caches.keys().then(function(names) {
+            for (let name of names) caches.delete(name);
+          });
+        }
       }
     </script>
   </body>

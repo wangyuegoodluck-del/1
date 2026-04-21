@@ -76,6 +76,15 @@ export default function App() {
     equipmentDeposit: 0
   });
 
+  // 诊断信息：帮助验证部署环境
+  useEffect(() => {
+    console.log('--- System Diagnostic ---');
+    console.log('User status:', user ? 'Logged in' : 'Not logged in');
+    console.log('Admin status:', isAdmin);
+    console.log('Tencent ID Configured:', !!import.meta.env.VITE_TENCENT_SECRET_ID);
+    console.log('--- End Diagnostic ---');
+  }, [user, isAdmin]);
+
   const [isGenerating, setIsGenerating] = useState(false);
   const [isIdentifying, setIsIdentifying] = useState(false);
   const [identifyError, setIdentifyError] = useState('');
