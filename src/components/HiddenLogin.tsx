@@ -5,7 +5,7 @@ import { auth, db } from '../services/firebase';
 import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import { loginWithEmail, logout, registerWithEmail } from '../services/firebase';
 import { doc, setDoc, Timestamp, updateDoc } from 'firebase/firestore';
-import { isCurrentUserAdmin, UserProfile, subscribeToUserProfile, CatalogProduct, addCatalogProduct, updateCatalogProduct, deleteCatalogProduct, subscribeToCatalogProducts } from '../services/userService';
+import { isCurrentUserAdmin, UserProfile, subscribeToUserProfile, CatalogProduct, addCatalogProduct, updateCatalogProduct, deleteCatalogProduct, subscribeToCatalogProducts, subscribeToAllUsers, updateUserApproval } from '../services/userService';
 
 interface HiddenLoginProps {
   onLogin?: (user: FirebaseUser, isAdmin: boolean) => void;
@@ -102,6 +102,7 @@ export default function HiddenLogin({ onLogin, onLogout }: HiddenLoginProps) {
           email,
           displayName: displayName || email.split('@')[0],
           isAdmin: false,
+          approved: false,
           createdAt: now,
           lastLoginAt: now,
         });
@@ -189,6 +190,16 @@ export default function HiddenLogin({ onLogin, onLogout }: HiddenLoginProps) {
                 {user ? (
                   // Logged in view
                   <div className="space-y-4">
+                    {userProfile && !userProfile.approved && !isAdmin && (
+                      <div className="p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-sm flex items-start gap-3">
+                        <Shield className="w-5 h-5 shrink-0 mt-0.5" />
+                        <div>
+                          <p className="font-semibold">等待管理员审核</p>
+                          <p className="mt-1 opacity-90">您的账号已注册成功，请联系管理员审核通过后即可使用完整功能。</p>
+                        </div>
+                      </div>
+                    )}
+
                     <div className="flex items-center gap-3 p-4 bg-gray-50 rounded-lg">
                       <div className="w-12 h-12 rounded-full bg-blue-100 flex items-center justify-center">
                         <User className="w-6 h-6 text-blue-600" />
@@ -741,17 +752,131 @@ function ProductManagement() {
 
 // User Management Component
 function UserManagement() {
+  const [users, setUsers] = useState<UserProfile[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [searchQuery, setSearchQuery] = useState('');
+
+  useEffect(() => {
+    setLoading(true);
+    const unsubscribe = subscribeToAllUsers((data) => {
+      setUsers(data);
+      setLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const filteredUsers = users.filter(u => 
+    u.email.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    u.displayName?.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  const handleToggleApproval = async (uid: string, currentStatus: boolean) => {
+    try {
+      await updateUserApproval(uid, !currentStatus);
+    } catch (err) {
+      alert('操作失败: ' + (err as Error).message);
+    }
+  };
+
+  const handleToggleAdmin = async (uid: string, currentIsAdmin: boolean) => {
+    if (!confirm(`确定要${currentIsAdmin ? '级' : '设为'}管理员吗？`)) return;
+    try {
+      const userRef = doc(db, 'users', uid);
+      await updateDoc(userRef, { isAdmin: !currentIsAdmin });
+    } catch (err) {
+      alert('操作失败: ' + (err as Error).message);
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex justify-between items-center">
         <h3 className="text-lg font-medium">用户列表</h3>
+        <p className="text-sm text-gray-500">共 {users.length} 位用户</p>
       </div>
-      
-      <div className="bg-gray-50 rounded-lg p-8 text-center text-gray-500">
-        <Users className="w-12 h-12 mx-auto mb-3 opacity-50" />
-        <p>用户管理功能开发中...</p>
-        <p className="text-sm mt-1">管理员可以查看所有用户及其客户数据</p>
+
+      <div className="relative">
+        <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
+        <input
+          type="text"
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder="搜索邮箱或姓名..."
+          className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+        />
       </div>
+
+      {loading ? (
+        <div className="text-center py-8 text-gray-500">加载中...</div>
+      ) : (
+        <div className="bg-white border rounded-lg overflow-hidden">
+          <table className="w-full">
+            <thead className="bg-gray-50 text-left">
+              <tr>
+                <th className="px-4 py-3 text-xs font-semibold text-gray-600 uppercase">用户信息</th>
+                <th className="px-4 py-3 text-xs font-semibold text-gray-600 uppercase">权限</th>
+                <th className="px-4 py-3 text-xs font-semibold text-gray-600 uppercase">审核状态</th>
+                <th className="px-4 py-3 text-xs font-semibold text-gray-600 uppercase text-center">操作</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              {filteredUsers.map(u => (
+                <tr key={u.uid} className="hover:bg-gray-50">
+                  <td className="px-4 py-3">
+                    <div className="text-sm font-medium text-gray-900">{u.displayName}</div>
+                    <div className="text-xs text-gray-500">{u.email}</div>
+                  </td>
+                  <td className="px-4 py-3">
+                    {u.isAdmin ? (
+                      <span className="inline-flex items-center gap-1 text-xs bg-red-100 text-red-700 px-2 py-0.5 rounded-full">
+                        <Shield className="w-3 h-3" />
+                        管理员
+                      </span>
+                    ) : (
+                      <span className="text-xs text-gray-500 italic">普通用户</span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3">
+                    {u.approved ? (
+                      <span className="inline-flex items-center gap-1 text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded-full">
+                        <CheckCircle2 className="w-3 h-3" />
+                        已通过
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full">
+                        <X className="w-3 h-3" />
+                        待审核
+                      </span>
+                    )}
+                  </td>
+                  <td className="px-4 py-3">
+                    <div className="flex items-center justify-center gap-2">
+                      <button
+                        onClick={() => handleToggleApproval(u.uid, u.approved || false)}
+                        className={`text-xs px-2 py-1 rounded transition-colors ${
+                          u.approved
+                            ? 'bg-amber-50 text-amber-600 hover:bg-amber-100'
+                            : 'bg-green-600 text-white hover:bg-green-700'
+                        }`}
+                      >
+                        {u.approved ? '撤回审核' : '通过审核'}
+                      </button>
+                      {auth.currentUser?.email === 'admin@fairino.com' && u.email !== 'admin@fairino.com' && (
+                        <button
+                          onClick={() => handleToggleAdmin(u.uid, u.isAdmin || false)}
+                          className="text-xs px-2 py-1 bg-gray-100 text-gray-600 rounded hover:bg-gray-200"
+                        >
+                          {u.isAdmin ? '取消管理员' : '设为管理员'}
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 }

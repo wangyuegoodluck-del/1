@@ -19,6 +19,7 @@ export interface UserProfile {
   email: string;
   displayName: string;
   isAdmin: boolean;
+  approved: boolean; // 是否已审批
   createdAt: Timestamp;
   lastLoginAt: Timestamp;
 }
@@ -101,6 +102,9 @@ export async function isCurrentUserAdmin(): Promise<boolean> {
   const user = auth.currentUser;
   if (!user) return false;
   
+  // 引导启动用硬编码管理员（用于首次部署后的初始化）
+  if (user.email === 'admin@fairino.com') return true;
+
   try {
     const userDoc = await getDoc(doc(db, 'users', user.uid));
     if (userDoc.exists()) {
@@ -119,12 +123,17 @@ export async function createUserProfile(uid: string, email: string, displayName:
     const userRef = doc(db, 'users', uid);
     const now = Timestamp.now();
     
+    // Check if user already exists to preserve approved status
+    const existingDoc = await getDoc(userRef);
+    const isApproved = existingDoc.exists() ? existingDoc.data().approved : (isAdmin); // Admin is auto-approved, others wait
+
     await setDoc(userRef, {
       uid,
       email,
       displayName,
       isAdmin,
-      createdAt: now,
+      approved: isApproved, // Use existing or default (false for non-admins)
+      createdAt: existingDoc.exists() ? existingDoc.data().createdAt : now,
       lastLoginAt: now,
     }, { merge: true });
   } catch (error) {
@@ -132,15 +141,32 @@ export async function createUserProfile(uid: string, email: string, displayName:
   }
 }
 
-// Update last login
-export async function updateLastLogin(uid: string) {
+// Subscribe to all users (admin only)
+export function subscribeToAllUsers(callback: (users: UserProfile[]) => void) {
+  const q = query(collection(db, 'users'));
+  
+  return onSnapshot(q, (snapshot) => {
+    const users = snapshot.docs.map(doc => doc.data() as UserProfile);
+    callback(users);
+  }, (error) => {
+    console.error('Error subscribing to all users:', error);
+    callback([]);
+  });
+}
+
+// Approve/Disapprove user
+export async function updateUserApproval(uid: string, approved: boolean) {
+  const isAdmin = await isCurrentUserAdmin();
+  if (!isAdmin) throw new Error('Admin only');
+  
   try {
     const userRef = doc(db, 'users', uid);
-    await setDoc(userRef, {
-      lastLoginAt: Timestamp.now(),
-    }, { merge: true });
+    await updateDoc(userRef, {
+      approved,
+      updatedAt: Timestamp.now(),
+    });
   } catch (error) {
-    console.error('Error updating last login:', error);
+    handleFirestoreError(error, OperationType.UPDATE, `users/${uid}`);
   }
 }
 

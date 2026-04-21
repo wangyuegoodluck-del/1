@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { 
-  FileText, Plus, Trash2, Download, Building2, Package, Hash, ChevronRight, CheckCircle2, Sparkles, Upload, Loader2, LogOut, History, Search, Settings2, X, Type, Camera
+  FileText, Plus, Trash2, Download, Building2, Package, Hash, ChevronRight, CheckCircle2, Sparkles, Upload, Loader2, LogOut, History, Search, Settings2, X, Type, Camera, Lock, Shield
 } from 'lucide-react';
 import { generateContract as generateSalesContract, ContractData, PartyInfo } from './services/contractGenerator';
 import { generateContract as generateLoanContract } from './services/contractGenerator_loan';
@@ -17,6 +17,8 @@ import {
   addPurchaseRecord,
   CatalogProduct,
   subscribeToCatalogProducts,
+  UserProfile,
+  subscribeToUserProfile
 } from './services/userService';
 import { Timestamp } from 'firebase/firestore';
 
@@ -87,6 +89,7 @@ export default function App() {
   
   // Auth & Memory State
   const [user, setUser] = useState<FirebaseUser | null>(null);
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [customers, setCustomers] = useState<CustomerWithMemory[]>([]);
   const [showHistory, setShowHistory] = useState(false);
@@ -125,6 +128,18 @@ export default function App() {
     };
   }, []);
 
+  // 订阅当前用户 Profile
+  useEffect(() => {
+    if (!user) {
+      setUserProfile(null);
+      return;
+    }
+    const unsubscribe = subscribeToUserProfile(user.uid, (profile) => {
+      setUserProfile(profile);
+    });
+    return () => unsubscribe();
+  }, [user]);
+
   // 用 useCallback 稳定传给 HiddenLogin 的回调，避免因函数引用变化触发重复 Firebase 订阅
   const handleLogin = useCallback((u: FirebaseUser, admin: boolean) => {
     setUser(u);
@@ -133,6 +148,7 @@ export default function App() {
 
   const handleLogout = useCallback(() => {
     setUser(null);
+    setUserProfile(null);
     setIsAdmin(false);
     setCustomers([]);
   }, []);
@@ -433,69 +449,100 @@ export default function App() {
             </div>
           </div>
 
-          {/* 合同类型选择 */}
-          <div className="px-6 py-3 bg-slate-50/60 border-t border-slate-100 flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <span className="text-sm font-medium text-slate-600">合同类型：</span>
-              <div className="flex items-center gap-2 bg-white rounded-lg p-1 border border-slate-200">
-                <button
-                  onClick={() => setData(prev => ({ ...prev, contractType: 'sales', contractNumber: 'FS26-A0' }))}
-                  className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${
-                    data.contractType === 'sales' 
-                      ? 'bg-blue-600 text-white shadow-sm' 
-                      : 'text-slate-600 hover:bg-slate-50'
-                  }`}
-                >
-                  销售合同
-                </button>
-                <button
-                  onClick={() => setData(prev => ({ ...prev, contractType: 'loan', contractNumber: 'FO26-A0' }))}
-                  className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${
-                    data.contractType === 'loan' 
-                      ? 'bg-blue-600 text-white shadow-sm' 
-                      : 'text-slate-600 hover:bg-slate-50'
-                  }`}
-                >
-                  借用合同
-                </button>
+          {!user ? (
+            <div className="p-12 text-center h-[50vh] flex flex-col items-center justify-center">
+              <div className="w-20 h-20 bg-slate-100 rounded-full flex items-center justify-center mb-6">
+                <Lock className="w-10 h-10 text-slate-400" />
               </div>
+              <h2 className="text-2xl font-bold text-slate-900 mb-2">系统受限</h2>
+              <p className="text-slate-500 max-w-sm mx-auto mb-8">
+                本系统为内部使用，请点击右下角的小点进行注册或登录。
+              </p>
             </div>
-            <div className="text-xs text-slate-400">
-              {data.contractType === 'sales' ? '产品采购合同' : '产品借用合同'}
+          ) : userProfile && !userProfile.approved && !isAdmin ? (
+            <div className="p-12 text-center h-[50vh] flex flex-col items-center justify-center">
+              <div className="w-20 h-20 bg-amber-50 rounded-full flex items-center justify-center mb-6">
+                <Shield className="w-10 h-10 text-amber-500" />
+              </div>
+              <h2 className="text-2xl font-bold text-slate-900 mb-2">等待管理员审核</h2>
+              <p className="text-slate-500 max-w-sm mx-auto mb-4">
+                您的账号 ({user.email}) 已注册成功，但尚未通过管理员审核。
+              </p>
+              <p className="text-sm text-slate-400 mb-8">
+                请联系管理员授权通过，在此期间功能暂时不可用。
+              </p>
+              <button onClick={logout} className="px-6 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl transition-all">
+                退出登录
+              </button>
             </div>
-          </div>
+          ) : (
+            <>
+              {/* 合同类型选择 */}
+              <div className="px-6 py-3 bg-slate-50/60 border-t border-slate-100 flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                  <span className="text-sm font-medium text-slate-600">合同类型：</span>
+                  <div className="flex items-center gap-2 bg-white rounded-lg p-1 border border-slate-200">
+                    <button
+                      onClick={() => setData(prev => ({ ...prev, contractType: 'sales', contractNumber: 'FS26-A0' }))}
+                      className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${
+                        data.contractType === 'sales' 
+                          ? 'bg-blue-600 text-white shadow-sm' 
+                          : 'text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      销售合同
+                    </button>
+                    <button
+                      onClick={() => setData(prev => ({ ...prev, contractType: 'loan', contractNumber: 'FO26-A0' }))}
+                      className={`px-4 py-1.5 rounded-md text-sm font-medium transition-all ${
+                        data.contractType === 'loan' 
+                          ? 'bg-blue-600 text-white shadow-sm' 
+                          : 'text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      借用合同
+                    </button>
+                  </div>
+                </div>
+                <div className="text-xs text-slate-400">
+                  {data.contractType === 'sales' ? '产品采购合同' : '产品借用合同'}
+                </div>
+              </div>
 
-          {/* 步骤条 */}
-          <div className="px-6 py-3 bg-slate-50/60 flex items-center gap-1">
-            {[1, 2, 3].map(s => {
-              const labels = ['客户信息', '合同条款', '产品清单'];
-              const isActive = step === s;
-              const isDone = step > s;
-              return (
-                <React.Fragment key={s}>
-                  <button
-                    onClick={() => s < step && setStep(s)}
-                    className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-all
-                      ${isActive ? 'bg-white text-blue-600 shadow-sm border border-blue-100' : 
-                        isDone ? 'text-slate-400 hover:text-blue-500 cursor-pointer' : 
-                        'text-slate-300 cursor-default'}`}
-                  >
-                    <span className={`w-5 h-5 rounded-full flex items-center justify-center text-xs border-2 flex-shrink-0
-                      ${isActive ? 'border-blue-500 bg-blue-500 text-white' : 
-                        isDone ? 'border-slate-300 bg-slate-100 text-slate-400' : 
-                        'border-slate-200 text-slate-300'}`}>
-                      {s}
-                    </span>
-                    <span>{labels[s-1]}</span>
-                  </button>
-                  {s < 3 && <ChevronRight className="w-4 h-4 text-slate-200 flex-shrink-0" />}
-                </React.Fragment>
-              );
-            })}
-          </div>
+              {/* 步骤条 */}
+              <div className="px-6 py-3 bg-slate-50/60 flex items-center gap-1">
+                {[1, 2, 3].map(s => {
+                  const labels = ['客户信息', '合同条款', '产品清单'];
+                  const isActive = step === s;
+                  const isDone = step > s;
+                  return (
+                    <React.Fragment key={s}>
+                      <button
+                        onClick={() => s < step && setStep(s)}
+                        className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-all
+                          ${isActive ? 'bg-white text-blue-600 shadow-sm border border-blue-100' : 
+                            isDone ? 'text-slate-400 hover:text-blue-500 cursor-pointer' : 
+                            'text-slate-300 cursor-default'}`}
+                      >
+                        <span className={`w-5 h-5 rounded-full flex items-center justify-center text-xs border-2 flex-shrink-0
+                          ${isActive ? 'border-blue-500 bg-blue-500 text-white' : 
+                            isDone ? 'border-slate-300 bg-slate-100 text-slate-400' : 
+                            'border-slate-200 text-slate-300'}`}>
+                          {s}
+                        </span>
+                        <span>{labels[s-1]}</span>
+                      </button>
+                      {s < 3 && <ChevronRight className="w-4 h-4 text-slate-200 flex-shrink-0" />}
+                    </React.Fragment>
+                  );
+                })}
+              </div>
+            </>
+          )}
         </header>
 
-        <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
+        {user && (userProfile?.approved || isAdmin) && (
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-8">
           <div className="lg:col-span-3 space-y-6">
             <AnimatePresence mode="wait">
               {step === 1 && (
@@ -1104,7 +1151,8 @@ export default function App() {
             </div>
           </div>
         </div>
-      </div>
+      )}
+    </div>
 
       {/* Template Settings Sidebar */}
       <AnimatePresence>

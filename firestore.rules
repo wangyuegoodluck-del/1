@@ -1,94 +1,73 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
-    // ===============================================================
-    // Assumed Data Model
-    // ===============================================================
-    //
-    // Collection: customers
-    // Document ID: auto-generated or customer name slug
-    // Fields:
-    //   - id: string (required)
-    //   - name: string (required, min 2 chars) - Official company name
-    //   - taxId: string (required) - Unified Social Credit Code
-    //   - address: string (optional)
-    //   - phone: string (optional)
-    //   - bank: string (optional)
-    //   - account: string (optional)
-    //   - lastUsed: string (required, ISO 8601)
-    //   - uid: string (required) - Owner UID
-    //
-    // ===============================================================
+    // 默认拒绝所有访问
+    match /{document=**} {
+      allow read, write: if false;
+    }
 
-    // ===============================================================
-    // Helper Functions
-    // ===============================================================
-    function isAuthenticated() {
+    // ==================== 辅助函数 ====================
+    function isSignedIn() {
       return request.auth != null;
     }
 
     function isOwner(userId) {
-      return isAuthenticated() && request.auth.uid == userId;
+      return isSignedIn() && request.auth.uid == userId;
     }
 
-    function isDocOwner() {
-      return isAuthenticated() && request.auth.uid == resource.data.uid;
+    // 获取用户数据（用于鉴权）
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
     }
 
-    function uidUnchanged() {
-      return !('uid' in request.resource.data) || request.resource.data.uid == request.auth.uid;
+    function isAdmin() {
+      // 如果 email 是 admin@fairino.com，则临时视为管理员（引导启动）
+      // 生产环境应严格依赖 isAdmin 字段
+      return isSignedIn() && (
+        getUserData().isAdmin == true || 
+        request.auth.token.email == 'admin@fairino.com'
+      );
     }
 
-    function uidNotModified() {
-      return !('uid' in request.resource.data) || request.resource.data.uid == resource.data.uid;
+    function isApproved() {
+      return isSignedIn() && (getUserData().approved == true || isAdmin());
     }
 
-    function hasRequiredFields(fields) {
-      return request.resource.data.keys().hasAll(fields);
-    }
+    // ==================== 规则 ====================
 
-    function isValidCustomer(data) {
-      return data.name is string && data.name.size() >= 2 && data.name.size() < 200 &&
-             data.taxId is string && data.taxId.size() >= 9 && data.taxId.size() < 50 &&
-             (!('address' in data) || (data.address is string && data.address.size() < 500)) &&
-             (!('phone' in data) || (data.phone is string && data.phone.size() < 50)) &&
-             (!('bank' in data) || (data.bank is string && data.bank.size() < 200)) &&
-             (!('account' in data) || (data.account is string && data.account.size() < 100)) &&
-             data.lastUsed is string &&
-             data.uid == request.auth.uid;
-    }
-
-    // ===============================================================
-    // Rules
-    // ===============================================================
-
-    match /customers/{customerId} {
-      // Users can only see their own customers (supporting both field names for compatibility)
-      allow read: if isAuthenticated() && (resource.data.userId == request.auth.uid || resource.data.uid == request.auth.uid);
-      
-      // Users can create their own customers
-      allow create: if isAuthenticated() && 
-                      (request.resource.data.userId == request.auth.uid || request.resource.data.uid == request.auth.uid);
-      
-      // Users can update their own customers
-      allow update: if isAuthenticated() && 
-                      (resource.data.userId == request.auth.uid || resource.data.uid == request.auth.uid);
-      
-      // Users can delete their own customers
-      allow delete: if isAuthenticated() && (resource.data.userId == request.auth.uid || resource.data.uid == request.auth.uid);
-    }
-
-    match /products/{productId} {
-      // Products are publicly readable if active
-      allow read: if resource.data.isActive == true;
-      // Writing to products requires admin (handled by a separate admin role if needed, 
-      // but for now let's allow read for active products).
-      // If we want to support any authenticated user for reading (more secure):
-      // allow read: if isAuthenticated() && resource.data.isActive == true;
-    }
-
+    // 用户配置
     match /users/{userId} {
-      allow read, write: if isOwner(userId);
+      allow get: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow list: if isAdmin();
+      
+      allow create: if isSignedIn() && request.auth.uid == userId && 
+                    request.resource.data.isAdmin == false && 
+                    request.resource.data.approved == false;
+      
+      allow update: if isAdmin() || (
+        isOwner(userId) && 
+        request.resource.data.isAdmin == resource.data.isAdmin && 
+        request.resource.data.approved == resource.data.approved
+      );
+    }
+
+    // 客户数据 - 仅限已审批用户
+    match /customers/{customerId} {
+      allow read: if isApproved() && (resource.data.userId == request.auth.uid || isAdmin());
+      allow write: if isApproved() && (
+        (request.resource.data.userId == request.auth.uid) || isAdmin()
+      );
+    }
+
+    // 产品目录 - 仅限已审批用户读取，管理员写入
+    match /products/{productId} {
+      allow read: if isApproved();
+      allow write: if isAdmin();
+    }
+
+    // 测试连接文档
+    match /test/connection {
+      allow read: if true;
     }
   }
 }
