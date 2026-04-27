@@ -344,6 +344,70 @@ export async function addPurchaseRecord(customerId: string, record: Omit<Purchas
   }
 }
 
+// ==================== Export Logic ====================
+
+/**
+ * 导出全量合同关键数据为 CSV (管理员专用)
+ */
+export async function exportContractDataCSV() {
+  const user = auth.currentUser;
+  if (!user) throw new Error('未认证');
+  
+  const adminStatus = await isCurrentUserAdmin();
+  if (!adminStatus) throw new Error('仅限管理员操作');
+
+  try {
+    // 获取所有客户记录（包含购买记录）
+    const q = query(collection(db, 'customers'));
+    const snapshot = await getDocs(q);
+    const allCustomers = snapshot.docs.map(doc => doc.data() as CustomerWithMemory);
+
+    // 展平数据：每条合同记录一行
+    const rows: string[] = [];
+    // CSV Header
+    rows.push(['合同编号', '签订日期', '客户名称', '税号', '总金额', '产品明细', '经办人ID'].join(','));
+
+    allCustomers.forEach(customer => {
+      if (customer.purchaseHistory && customer.purchaseHistory.length > 0) {
+        customer.purchaseHistory.forEach(record => {
+          const productSummary = record.products
+            .map(p => `${p.name}*${p.quantity}`)
+            .join(' | ');
+          
+          const row = [
+            `"${record.contractNumber}"`,
+            `"${record.date.toDate().toISOString().split('T')[0]}"`,
+            `"${customer.name}"`,
+            `"${customer.taxId}"`,
+            record.totalAmount,
+            `"${productSummary}"`,
+            `"${customer.userId}"`
+          ].join(',');
+          rows.push(row);
+        });
+      }
+    });
+
+    if (rows.length <= 1) {
+      throw new Error('暂无可导出的合同数据');
+    }
+
+    // 创建 Blob 并下载
+    const csvContent = '\uFEFF' + rows.join('\n'); // 添加 BOM 支持 Excel 中文
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', `contract_data_export_${new Date().toISOString().split('T')[0]}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  } catch (error) {
+    console.error('Export failed:', error);
+    throw error;
+  }
+}
+
 // ==================== Product Catalog Functions (Admin Only) ====================
 
 // Get all catalog products

@@ -18,7 +18,8 @@ import {
   CatalogProduct,
   subscribeToCatalogProducts,
   UserProfile,
-  subscribeToUserProfile
+  subscribeToUserProfile,
+  exportContractDataCSV
 } from './services/userService';
 import { Timestamp } from 'firebase/firestore';
 
@@ -87,6 +88,7 @@ export default function App() {
   const [showContactAi, setShowContactAi] = useState(false);
   const [contactAiText, setContactAiText] = useState('');
   const [isParsingContact, setIsParsingContact] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
   // 产品目录
   const [catalogProducts, setCatalogProducts] = useState<CatalogProduct[]>([]);
 
@@ -434,6 +436,26 @@ export default function App() {
 
             {/* 右侧操作区 */}
             <div className="flex items-center gap-3 flex-shrink-0 ml-4">
+              {isAdmin && (
+                <button 
+                  onClick={async () => {
+                    setIsExporting(true);
+                    try {
+                      await exportContractDataCSV();
+                    } catch (err) {
+                      alert(err instanceof Error ? err.message : '导出失败');
+                    } finally {
+                      setIsExporting(false);
+                    }
+                  }}
+                  disabled={isExporting}
+                  className="flex items-center gap-2 px-3 py-1.5 text-xs font-bold text-emerald-600 bg-emerald-50 hover:bg-emerald-100 rounded-xl transition-all border border-emerald-100"
+                  title="导出全量数据"
+                >
+                  {isExporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
+                  <span>数据导出</span>
+                </button>
+              )}
               <button 
                 onClick={() => setShowTemplateSettings(true)}
                 className="p-2 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition-all"

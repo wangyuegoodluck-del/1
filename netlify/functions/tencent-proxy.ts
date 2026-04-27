@@ -45,10 +45,21 @@ export const handler: Handler = async (event) => {
     const httpRequestMethod = 'POST';
     const canonicalUri = '/';
     const canonicalQueryString = '';
-    const canonicalHeaders = `content-type:${contentType}\nhost:${endpoint}\nx-tc-action:${action.toLowerCase()}\n`;
+    
+    // 腾讯云要求在计算签名时 Action 最好统一小写处理，且 Headers 必须一致
+    const actionHeader = action.toLowerCase();
+    const canonicalHeaders = `content-type:${contentType}\nhost:${endpoint}\nx-tc-action:${actionHeader}\n`;
     const signedHeaders = 'content-type;host;x-tc-action';
     const hashedRequestPayload = crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
-    const canonicalRequest = `${httpRequestMethod}\n${canonicalUri}\n${canonicalQueryString}\n${canonicalHeaders}\n${signedHeaders}\n${hashedRequestPayload}`;
+    
+    const canonicalRequest = [
+      httpRequestMethod,
+      canonicalUri,
+      canonicalQueryString,
+      canonicalHeaders,
+      signedHeaders,
+      hashedRequestPayload
+    ].join('\n');
 
     // 3. 构造待签名字符串 (String to Sign)
     const algorithm = 'TC3-HMAC-SHA256';
@@ -68,7 +79,7 @@ export const handler: Handler = async (event) => {
         'Authorization': authorization,
         'Content-Type': contentType,
         'Host': endpoint,
-        'X-TC-Action': action,
+        'X-TC-Action': action, // HTTP 实际请求可以使用原大小写，但规范请求串中必须匹配
         'X-TC-Version': version,
         'X-TC-Timestamp': String(timestamp),
         'X-TC-Region': region,
