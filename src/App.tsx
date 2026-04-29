@@ -10,6 +10,7 @@ import { logout } from './services/firebase';
 import { User as FirebaseUser } from 'firebase/auth';
 import { LOGO_BASE64 } from './constants';
 import HiddenLogin from './components/HiddenLogin';
+import UserManagerContent from './components/UserManagerContent';
 import { 
   CustomerWithMemory, 
   subscribeToCustomersMemory, 
@@ -89,6 +90,7 @@ export default function App() {
   const [contactAiText, setContactAiText] = useState('');
   const [isParsingContact, setIsParsingContact] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [showUserManager, setShowUserManager] = useState(false);
   // 产品目录
   const [catalogProducts, setCatalogProducts] = useState<CatalogProduct[]>([]);
 
@@ -151,7 +153,13 @@ export default function App() {
     return () => unsubscribe();
   }, [user]);
 
-  // 用 useCallback 稳定传给 HiddenLogin 的回调，避免因函数引用变化触发重复 Firebase 订阅
+  useEffect(() => {
+    if (userProfile) {
+      setIsAdmin(userProfile.isAdmin || user?.email === 'admin@fairino.com');
+    }
+  }, [userProfile, user]);
+
+  // 用 useCallback 稳定传给 HiddenLogin 的回调
   const handleLogin = useCallback((u: FirebaseUser, admin: boolean) => {
     setUser(u);
     setIsAdmin(admin);
@@ -454,6 +462,15 @@ export default function App() {
                 >
                   {isExporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
                   <span>数据导出</span>
+                </button>
+              )}
+              {isAdmin && (
+                <button 
+                  onClick={() => setShowUserManager(true)}
+                  className="p-2 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-xl transition-all"
+                  title="用户管理"
+                >
+                  <Shield className="w-5 h-5" />
                 </button>
               )}
               <button 
@@ -1308,6 +1325,29 @@ export default function App() {
                   保存并关闭
                 </button>
               </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      {/* User Manager Sidebar */}
+      <AnimatePresence>
+        {showUserManager && isAdmin && (
+          <>
+            <motion.div 
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowUserManager(false)}
+              className="fixed inset-0 bg-slate-900/20 backdrop-blur-sm z-40"
+            />
+            <motion.div 
+              initial={{ x: '100%' }}
+              animate={{ x: 0 }}
+              exit={{ x: '100%' }}
+              className="fixed top-0 right-0 h-full w-full max-w-lg bg-white shadow-2xl z-50 overflow-y-auto"
+            >
+              <UserManagerContent onClose={() => setShowUserManager(false)} />
             </motion.div>
           </>
         )}
