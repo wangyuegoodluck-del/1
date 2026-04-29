@@ -21,12 +21,12 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      // 如果 email 是 admin@fairino.com，则临时视为管理员（引导启动）
-      // 生产环境应严格依赖 isAdmin 字段
-      return isSignedIn() && (
-        getUserData().isAdmin == true || 
-        request.auth.token.email == 'admin@fairino.com'
-      );
+      // 增强逻辑：首先检查是否是硬编码管理员邮箱
+      if (isSignedIn() && request.auth.token.email == 'admin@fairino.com') {
+        return true;
+      }
+      // 其次检查数据库记录中的 isAdmin 字段
+      return isSignedIn() && exists(/databases/$(database)/documents/users/$(request.auth.uid)) && getUserData().isAdmin == true;
     }
 
     function isApproved() {

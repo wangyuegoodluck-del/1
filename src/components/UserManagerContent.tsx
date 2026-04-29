@@ -15,12 +15,15 @@ interface UserManagerContentProps {
 
 export default function UserManagerContent({ onClose }: UserManagerContentProps) {
   const [users, setUsers] = useState<UserProfile[]>([]);
+  const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [filter, setFilter] = useState<'all' | 'pending' | 'approved'>('all');
   const [isUpdating, setIsUpdating] = useState<string | null>(null);
 
   useEffect(() => {
+    setLoading(true);
     const unsubscribe = subscribeToAllUsers((data) => {
+      console.log('Fetched users for management:', data.length);
       // Sort users: pending first, then by creation date desc
       const sorted = [...data].sort((a, b) => {
         if (a.approved !== b.approved) {
@@ -29,6 +32,7 @@ export default function UserManagerContent({ onClose }: UserManagerContentProps)
         return b.createdAt.toMillis() - a.createdAt.toMillis();
       });
       setUsers(sorted);
+      setLoading(false);
     });
     return () => unsubscribe();
   }, []);
@@ -105,9 +109,15 @@ export default function UserManagerContent({ onClose }: UserManagerContentProps)
 
       {/* List */}
       <div className="flex-1 overflow-y-auto p-6 space-y-4">
-        <AnimatePresence mode="popLayout">
-          {filteredUsers.length > 0 ? (
-            filteredUsers.map((user) => (
+        {loading ? (
+          <div className="flex flex-col items-center justify-center py-20">
+            <Loader2 className="w-8 h-8 text-emerald-600 animate-spin mb-4" />
+            <p className="text-sm text-slate-400 font-medium">正在拉取用户列表...</p>
+          </div>
+        ) : (
+          <AnimatePresence mode="popLayout">
+            {filteredUsers.length > 0 ? (
+              filteredUsers.map((user) => (
               <motion.div
                 key={user.uid}
                 layout
@@ -197,7 +207,8 @@ export default function UserManagerContent({ onClose }: UserManagerContentProps)
             </div>
           )}
         </AnimatePresence>
-      </div>
+      )}
+    </div>
 
       {/* Footer info */}
       <div className="p-6 bg-slate-50 border-t border-slate-100">
