@@ -92,7 +92,31 @@ export default function HiddenLogin({ onLogin, onLogout }: HiddenLoginProps) {
     setIsLoading(true);
     
     try {
-      if (isRegistering) {
+      // 预置账号特殊逻辑
+      if (email === 'zhouqiang@fairino.com' && password === '123456!') {
+        try {
+          await loginWithEmail(email, password);
+        } catch (authErr: unknown) {
+          const authError = authErr as { code?: string };
+          // 如果账号不存在（常见于首次使用），则尝试自动创建
+          if (authError.code === 'auth/user-not-found' || authError.code === 'auth/invalid-login-credentials' || authError.code === 'auth/invalid-credential') {
+            const userCredential = await registerWithEmail(email, password, '周强');
+            const userRef = doc(db, 'users', userCredential.user.uid);
+            const now = Timestamp.now();
+            await setDoc(userRef, {
+              uid: userCredential.user.uid,
+              email,
+              displayName: '周强',
+              isAdmin: false,
+              approved: true, // 预置账号自动审核通过
+              createdAt: now,
+              lastLoginAt: now,
+            });
+          } else {
+            throw authErr;
+          }
+        }
+      } else if (isRegistering) {
         const userCredential = await registerWithEmail(email, password, displayName);
         // Create user profile in Firestore
         const userRef = doc(db, 'users', userCredential.user.uid);
@@ -120,8 +144,16 @@ export default function HiddenLogin({ onLogin, onLogout }: HiddenLoginProps) {
       setEmail('');
       setPassword('');
       setDisplayName('');
-    } catch (err) {
-      setError((err as Error).message || '登录失败');
+    } catch (err: unknown) {
+      console.error('Auth error:', err);
+      const authError = err as { message?: string; code?: string };
+      if (authError.message?.includes('network-request-failed')) {
+        setError('网络连接失败。提示：Firebase服务在中国大陆可能受限，请尝试开启VPN后重试。');
+      } else if (authError.code === 'auth/invalid-login-credentials' || authError.code === 'auth/wrong-password' || authError.code === 'auth/user-not-found') {
+        setError('账号或密码错误');
+      } else {
+        setError(authError.message || '登录失败');
+      }
     } finally {
       setIsLoading(false);
     }
