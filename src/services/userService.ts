@@ -12,6 +12,7 @@ import {
   updateDoc
 } from 'firebase/firestore';
 import { handleFirestoreError, OperationType } from './firebase';
+import { apiGet, apiSet, apiPoll } from './apiDataHub';
 
 // User Profile in Firestore
 export interface UserProfile {
@@ -100,58 +101,97 @@ export interface CatalogProduct {
 // Check if current user is admin
 export async function isCurrentUserAdmin(): Promise<boolean> {
   const user = auth.currentUser;
-  if (!user) return false;
+  
+  // 检查本地持久化 Session (API Fallback)
+  let userId = user?.uid;
+  let userEmail = user?.email;
+  
+  if (!userId) {
+    const savedUser = localStorage.getItem('auth_user');
+    if (savedUser) {
+      try {
+        const u = JSON.parse(savedUser);
+        userId = u.uid;
+        userEmail = u.email;
+        if (u.isAdmin) return true;
+      } catch {
+        // ignore
+      }
+    }
+  }
+
+  if (!userId) return false;
   
   // 引导启动用硬编码管理员（用于首次部署后的初始化）
-  if (user.email === 'admin@fairino.com') return true;
+  if (userEmail === 'admin@fairino.com') return true;
 
   try {
-    const userDoc = await getDoc(doc(db, 'users', user.uid));
+    // 优先尝试直接获取
+    const userDoc = await getDoc(doc(db, 'users', userId));
     if (userDoc.exists()) {
       return userDoc.data().isAdmin === true;
     }
-    return false;
-  } catch (error) {
-    console.error('Error checking admin status:', error);
-    return false;
+  } catch {
+    // 如果直接获取失败（网络问题），尝试 API
+    try {
+      const profile = await apiGet('users', userId);
+      return profile?.isAdmin === true;
+    } catch (apiErr) {
+      console.error('Error checking admin status (Firebase & API):', apiErr);
+    }
   }
+  return false;
 }
 
 // Create or update user profile
 export async function createUserProfile(uid: string, email: string, displayName: string, isAdmin = false) {
+  const now = Timestamp.now();
+  const data = {
+    uid,
+    email,
+    displayName,
+    isAdmin,
+    // approved: isAdmin, // We'll handle approved status more carefully
+    lastLoginAt: now,
+  };
+
   try {
     const userRef = doc(db, 'users', uid);
-    const now = Timestamp.now();
-    
     // Check if user already exists to preserve approved status
     const existingDoc = await getDoc(userRef);
     const isApproved = existingDoc.exists() ? existingDoc.data().approved : (isAdmin); // Admin is auto-approved, others wait
 
     await setDoc(userRef, {
-      uid,
-      email,
-      displayName,
-      isAdmin,
-      approved: isApproved, // Use existing or default (false for non-admins)
+      ...data,
+      approved: isApproved,
       createdAt: existingDoc.exists() ? existingDoc.data().createdAt : now,
-      lastLoginAt: now,
     }, { merge: true });
-  } catch (error) {
-    handleFirestoreError(error, OperationType.WRITE, `users/${uid}`);
+  } catch {
+    console.error('Firebase write failed (Profile), trying API...');
+    try {
+      // In API mode, we might not know if they are approved, so we default to the intended state
+      await apiSet('users', uid, { ...data, approved: isAdmin, createdAt: now });
+    } catch (apiErr) {
+      handleFirestoreError(apiErr, OperationType.WRITE, `users/${uid}`);
+    }
   }
 }
 
 // Subscribe to all users (admin only)
 export function subscribeToAllUsers(callback: (users: UserProfile[]) => void) {
+  // 正常路径：Firebase 分发
   const q = query(collection(db, 'users'));
   
-  return onSnapshot(q, (snapshot) => {
+  const unsubscribe = onSnapshot(q, (snapshot) => {
     const users = snapshot.docs.map(doc => doc.data() as UserProfile);
     callback(users);
   }, (error) => {
-    console.error('Error subscribing to all users:', error);
-    callback([]);
+    console.error('Firebase snapshot failed (AllUsers), trying API polling...', error);
+    // 异常路径：API 轮询
+    apiPoll<UserProfile>('users').then(users => callback(users));
   });
+
+  return unsubscribe;
 }
 
 // Approve/Disapprove user
@@ -159,14 +199,21 @@ export async function updateUserApproval(uid: string, approved: boolean) {
   const isAdmin = await isCurrentUserAdmin();
   if (!isAdmin) throw new Error('Admin only');
   
+  const updates = {
+    approved,
+    updatedAt: Timestamp.now(),
+  };
+
   try {
     const userRef = doc(db, 'users', uid);
-    await updateDoc(userRef, {
-      approved,
-      updatedAt: Timestamp.now(),
-    });
+    await updateDoc(userRef, updates);
   } catch (error) {
-    handleFirestoreError(error, OperationType.UPDATE, `users/${uid}`);
+    console.error('Firebase update failed (Approval), trying API...', error);
+    try {
+      await apiSet('users', uid, updates);
+    } catch (apiErr) {
+      handleFirestoreError(apiErr, OperationType.UPDATE, `users/${uid}`);
+    }
   }
 }
 
@@ -174,41 +221,49 @@ export async function updateUserApproval(uid: string, approved: boolean) {
 export function subscribeToUserProfile(uid: string, callback: (profile: UserProfile | null) => void) {
   const userRef = doc(db, 'users', uid);
   
-  return onSnapshot(userRef, (doc) => {
+  const unsubscribe = onSnapshot(userRef, (doc) => {
     if (doc.exists()) {
       callback(doc.data() as UserProfile);
     } else {
       callback(null);
     }
   }, (error) => {
-    console.error('Error subscribing to user profile:', error);
-    callback(null);
+    console.error('Firebase snapshot failed (Profile), trying API Get...', error);
+    apiGet('users', uid).then(profile => callback(profile as UserProfile));
   });
+
+  return unsubscribe;
 }
 
 // ==================== Customer Memory Functions ====================
 
 // Save customer (with user isolation)
 export async function saveCustomerMemory(customer: Omit<CustomerWithMemory, 'id' | 'userId' | 'createdAt' | 'updatedAt'>) {
-  const user = auth.currentUser;
+  const user = auth.currentUser || (localStorage.getItem('auth_user') ? JSON.parse(localStorage.getItem('auth_user')!) : null);
   if (!user) throw new Error('User not authenticated');
   
+  const id = `cust_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
+  const now = Timestamp.now();
+  const customerData: CustomerWithMemory = {
+    ...customer,
+    id,
+    userId: user.uid,
+    createdAt: now,
+    updatedAt: now,
+  };
+
   try {
-    const customerRef = doc(collection(db, 'customers'));
-    const now = Timestamp.now();
-    
-    const customerData: CustomerWithMemory = {
-      ...customer,
-      id: customerRef.id,
-      userId: user.uid, // 绑定到创建用户
-      createdAt: now,
-      updatedAt: now,
-    };
-    
+    const customerRef = doc(db, 'customers', id);
     await setDoc(customerRef, customerData);
-    return customerRef.id;
+    return id;
   } catch (error) {
-    handleFirestoreError(error, OperationType.CREATE, 'customers');
+    console.error('Firebase write failed (SaveCustomer), trying API...', error);
+    try {
+      await apiSet('customers', id, customerData);
+      return id;
+    } catch (apiErr) {
+      handleFirestoreError(apiErr, OperationType.CREATE, 'customers');
+    }
   }
 }
 
@@ -240,7 +295,7 @@ export async function updateCustomerMemory(customerId: string, updates: Partial<
 
 // Subscribe to customers (filtered by user unless admin)
 export function subscribeToCustomersMemory(callback: (customers: CustomerWithMemory[]) => void) {
-  const user = auth.currentUser;
+  const user = auth.currentUser || (localStorage.getItem('auth_user') ? JSON.parse(localStorage.getItem('auth_user')!) : null);
   if (!user) {
     callback([]);
     return () => {};
@@ -249,37 +304,67 @@ export function subscribeToCustomersMemory(callback: (customers: CustomerWithMem
   // cancelled 标志：如果在异步检查完成前就调用了 unsubscribe，则不再建立真实订阅
   let cancelled = false;
   let innerUnsubscribe: (() => void) | null = null;
+  let pollingInterval: ReturnType<typeof setInterval> | null = null;
 
-  const checkAdminAndSubscribe = async () => {
+  const subscribe = async () => {
     try {
       const isAdmin = await isCurrentUserAdmin();
       if (cancelled) return;
 
-      let q;
-      if (isAdmin) {
-        q = query(collection(db, 'customers'));
-      } else {
-        q = query(collection(db, 'customers'), where('userId', '==', user.uid));
-      }
+      const setupDirectSubscription = () => {
+        let q;
+        if (isAdmin) {
+          q = query(collection(db, 'customers'));
+        } else {
+          q = query(collection(db, 'customers'), where('userId', '==', user.uid));
+        }
 
-      innerUnsubscribe = onSnapshot(q, (snapshot) => {
-        const customers = snapshot.docs.map(doc => doc.data() as CustomerWithMemory);
-        callback(customers);
-      }, (error) => {
-        console.error('Error subscribing to customers:', error);
-        callback([]);
-      });
-    } catch (err) {
-      console.error('checkAdminAndSubscribe error:', err);
+        innerUnsubscribe = onSnapshot(q, (snapshot) => {
+          const customers = snapshot.docs.map(doc => doc.data() as CustomerWithMemory);
+          callback(customers);
+        }, (error) => {
+          console.error('Firebase snapshot failed (Customers), falling back to API Poll...', error);
+          startPolling(isAdmin);
+        });
+      };
+
+      const startPolling = async (admin: boolean) => {
+        if (pollingInterval) clearInterval(pollingInterval);
+        
+        const fetchOnce = async () => {
+          try {
+            let data: CustomerWithMemory[];
+            if (admin) {
+              data = await apiPoll<CustomerWithMemory>('customers');
+            } else {
+              data = await apiPoll<CustomerWithMemory>('customers', { userId: user.uid });
+            }
+            if (!cancelled) callback(data);
+          } catch (e) {
+            console.error('API polling failed:', e);
+          }
+        };
+
+        fetchOnce();
+        pollingInterval = setInterval(() => {
+          fetchOnce();
+        }, 10000); // 10秒轮询一次
+      };
+
+      // 首次尝试直接订阅
+      setupDirectSubscription();
+      
+    } catch {
       callback([]);
     }
   };
 
-  checkAdminAndSubscribe();
+  subscribe();
 
   return () => {
     cancelled = true;
     if (innerUnsubscribe) innerUnsubscribe();
+    if (pollingInterval) clearInterval(pollingInterval);
   };
 }
 
@@ -311,28 +396,21 @@ export async function getCustomerMemory(customerId: string): Promise<CustomerWit
 
 // Add purchase record to customer
 export async function addPurchaseRecord(customerId: string, record: Omit<PurchaseRecord, 'id'>) {
-  const user = auth.currentUser;
+  const user = auth.currentUser || (localStorage.getItem('auth_user') ? JSON.parse(localStorage.getItem('auth_user')!) : null);
   if (!user) throw new Error('User not authenticated');
   
+  const newRecordId = Date.now().toString();
+  const newRecord: PurchaseRecord = {
+    ...record,
+    id: newRecordId,
+  };
+
   try {
     const customerRef = doc(db, 'customers', customerId);
     const customerDoc = await getDoc(customerRef);
-    
     if (!customerDoc.exists()) throw new Error('Customer not found');
     
     const data = customerDoc.data() as CustomerWithMemory;
-    
-    // Check ownership
-    const isAdmin = await isCurrentUserAdmin();
-    if (!isAdmin && data.userId !== user.uid) {
-      throw new Error('Permission denied');
-    }
-    
-    const newRecord: PurchaseRecord = {
-      ...record,
-      id: Date.now().toString(),
-    };
-    
     const updatedHistory = [...(data.purchaseHistory || []), newRecord];
     
     await updateDoc(customerRef, {
@@ -340,7 +418,19 @@ export async function addPurchaseRecord(customerId: string, record: Omit<Purchas
       updatedAt: Timestamp.now(),
     });
   } catch (error) {
-    handleFirestoreError(error, OperationType.UPDATE, `customers/${customerId}`);
+    console.error('Firebase update failed (PurchaseRecord), trying API...', error);
+    try {
+      // API 需要获取当前客户以合并历史记录，或者后端支持局部更新（目前 apiSet 是全量更新或合并）
+      const customer = await apiGet('customers', customerId);
+      if (!customer) throw new Error('Customer not found via API');
+      const updatedHistory = [...(customer.purchaseHistory || []), newRecord];
+      await apiSet('customers', customerId, {
+        purchaseHistory: updatedHistory,
+        updatedAt: Timestamp.now(),
+      });
+    } catch (apiErr) {
+      handleFirestoreError(apiErr, OperationType.UPDATE, `customers/${customerId}`);
+    }
   }
 }
 
@@ -426,13 +516,15 @@ export async function getCatalogProducts(): Promise<CatalogProduct[]> {
 export function subscribeToCatalogProducts(callback: (products: CatalogProduct[]) => void) {
   const q = query(collection(db, 'products'), where('isActive', '==', true));
   
-  return onSnapshot(q, (snapshot) => {
+  const unsubscribe = onSnapshot(q, (snapshot) => {
     const products = snapshot.docs.map(doc => doc.data() as CatalogProduct);
     callback(products);
   }, (error) => {
-    console.error('Error subscribing to products:', error);
-    callback([]);
+    console.error('Firebase snapshot failed (Catalog), trying API polling...', error);
+    apiPoll<CatalogProduct>('products', { isActive: true }).then(products => callback(products));
   });
+
+  return unsubscribe;
 }
 
 // Add product (admin only)

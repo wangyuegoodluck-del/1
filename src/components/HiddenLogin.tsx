@@ -90,33 +90,44 @@ export default function HiddenLogin({ onLogin, onLogout }: HiddenLoginProps) {
     e.preventDefault();
     setError('');
     setIsLoading(true);
-    
-    try {
-      // 预置账号特殊逻辑
-      if (email === 'zhouqiang@fairino.com' && password === '123456!') {
-        try {
-          await loginWithEmail(email, password);
-        } catch (authErr: unknown) {
-          const authError = authErr as { code?: string };
-          // 如果账号不存在（常见于首次使用），则尝试自动创建
-          if (authError.code === 'auth/user-not-found' || authError.code === 'auth/invalid-login-credentials' || authError.code === 'auth/invalid-credential') {
-            const userCredential = await registerWithEmail(email, password, '周强');
-            const userRef = doc(db, 'users', userCredential.user.uid);
-            const now = Timestamp.now();
-            await setDoc(userRef, {
-              uid: userCredential.user.uid,
-              email,
-              displayName: '周强',
-              isAdmin: false,
-              approved: true, // 预置账号自动审核通过
-              createdAt: now,
-              lastLoginAt: now,
-            });
-          } else {
-            throw authErr;
+
+    const tryApiLogin = async () => {
+      try {
+        const response = await fetch('/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        });
+        const data = await response.json();
+        if (data.success) {
+          // 保存 Session 到本地，供没有 VPN 的同事下次使用
+          localStorage.setItem('auth_user', JSON.stringify(data.user));
+          if (data.token) localStorage.setItem('auth_token', data.token);
+          
+          if (onLoginRef.current) {
+            // 注意：API 登录没有真实的 Firebase User 对象，我们模拟一个最小化的
+            onLoginRef.current(data.user as unknown as FirebaseUser, data.user.isAdmin);
           }
+          setShowPanel(false);
+          return true;
+        } else {
+          setError(data.message || '通过中转服务器登录失败');
+          return false;
         }
-      } else if (isRegistering) {
+      } catch {
+        setError('服务器连接失败，请检查网络');
+        return false;
+      }
+    };
+
+    try {
+      if (email === 'zhouqiang@fairino.com' && password === '123456!') {
+        // zhouqiang 强制走 API，因为他通常在大陆且无 VPN
+        await tryApiLogin();
+        return;
+      }
+
+      if (isRegistering) {
         const userCredential = await registerWithEmail(email, password, displayName);
         // Create user profile in Firestore
         const userRef = doc(db, 'users', userCredential.user.uid);
@@ -147,8 +158,14 @@ export default function HiddenLogin({ onLogin, onLogout }: HiddenLoginProps) {
     } catch (err: unknown) {
       console.error('Auth error:', err);
       const authError = err as { message?: string; code?: string };
-      if (authError.message?.includes('network-request-failed')) {
-        setError('网络连接失败。提示：Firebase服务在中国大陆可能受限，请尝试开启VPN后重试。');
+      
+      // 如果是网络错误，自动尝试通过中转服务器登录
+      if (authError.message?.includes('network-request-failed') || authError.code?.includes('network-error') || authError.code === 'auth/internal-error') {
+        console.log('Firebase blocked detected, trying API fallback...');
+        const success = await tryApiLogin();
+        if (!success && !error) {
+          setError('网络异常 (Firebase 访问受限)。尝试通过中转服务器登录失败，请检查账号密码。');
+        }
       } else if (authError.code === 'auth/invalid-login-credentials' || authError.code === 'auth/wrong-password' || authError.code === 'auth/user-not-found') {
         setError('账号或密码错误');
       } else {

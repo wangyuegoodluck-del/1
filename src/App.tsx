@@ -82,6 +82,20 @@ export default function App() {
   const [user, setUser] = useState<FirebaseUser | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
+
+  // 初始化：检查本地 Session
+  useEffect(() => {
+    const savedUser = localStorage.getItem('auth_user');
+    if (savedUser && !user) {
+      try {
+        const u = JSON.parse(savedUser);
+        console.log('Restored session from localStorage:', u);
+        setUser(u as unknown as FirebaseUser);
+      } catch (e) {
+        console.error('Failed to parse saved user:', e);
+      }
+    }
+  }, [user]);
   const [customers, setCustomers] = useState<CustomerWithMemory[]>([]);
   const [showHistory, setShowHistory] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');

@@ -26,7 +26,11 @@ setPersistence(auth, browserLocalPersistence);
 
 // Auth helpers
 export const loginWithGoogle = () => signInWithPopup(auth, googleProvider);
-export const logout = () => signOut(auth);
+export const logout = () => {
+  localStorage.removeItem('auth_user');
+  localStorage.removeItem('auth_token');
+  return signOut(auth);
+};
 
 // Email/Password Auth
 export const loginWithEmail = (email: string, password: string) => 

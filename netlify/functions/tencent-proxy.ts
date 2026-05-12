@@ -1,7 +1,7 @@
 import { Handler } from '@netlify/functions';
 import crypto from 'crypto';
 
-function sha256(message: string, secret: string | Buffer = '', encoding?: 'hex'): any {
+function sha256(message: string, secret: string | Buffer = '', encoding?: 'hex'): string | Buffer {
   const hmac = crypto.createHmac('sha256', secret);
   hmac.update(message);
   return encoding ? hmac.digest(encoding) : hmac.digest();
