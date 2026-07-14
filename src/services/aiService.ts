@@ -22,6 +22,147 @@ export interface IdentifiedParty {
 
 // ─── 1. 通用文字识别（fallback） ────────────────────────────────────
 
+function stripLabel(value: string): string {
+  return value.replace(/^[，,、；;：:\s]+/, '').trim();
+}
+
+function escapeRegexChar(char: string): string {
+  return char.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function labelToFlexiblePattern(label: string): string {
+  return Array.from(label).map((char) => {
+    if (/\s/.test(char)) return '\\s*';
+    if (char === '、' || char === '，' || char === ',') return '[、，,]\\s*';
+    return `${escapeRegexChar(char)}\\s*`;
+  }).join('');
+}
+
+function matchLine(text: string, labels: string[]): string {
+  const labelPatterns = labels.map(labelToFlexiblePattern).join('|');
+  const regex = new RegExp(`(?:${labelPatterns})[：:]?\\s*([^\\n\\r]+)`, 'i');
+  const match = text.match(regex);
+  return match ? stripLabel(match[1]) : '';
+}
+
+function inferShortName(name: string): string | undefined {
+  if (!name) return undefined;
+  return name
+    .replace(/(有限责任公司|股份有限公司|有限公司|股份公司|责任公司|集团|公司)$/g, '')
+    .trim() || undefined;
+}
+
+function extractDigits(value: string): string {
+  return (value.match(/\d+/g) || []).join('');
+}
+
+function extractAccountCandidate(value: string): string {
+  const digitGroups = value.match(/\d{12,30}/g) || [];
+  return digitGroups[0] || '';
+}
+
+function extractBankCodeCandidate(value: string): string {
+  const bankCodeMatch = value.match(/(?:联\s*行\s*号|银行\s*行\s*号|行\s*号)\s*[：:]?\s*([0-9]{8,14})/);
+  if (bankCodeMatch) return bankCodeMatch[1];
+  return '';
+}
+
+function cleanBankName(value: string): string {
+  return value
+    .replace(/^\s*(?:开户银行|开户行|银行名称|银行)\s*[：:]?\s*/, '')
+    .replace(/[，,、；;]?\s*(?:银行账号|开户账号|收款账号|账号|账户|联\s*行\s*号|银行\s*行\s*号|行\s*号)\s*[：:]?[\s\S]*$/g, '')
+    .replace(/\d{6,}/g, '')
+    .replace(/^[，,、；;：:\s]+|[，,、；;：:\s]+$/g, '')
+    .trim();
+}
+
+function normalizeBankFields(result: IdentifiedParty, sourceText: string): IdentifiedParty {
+  const combinedBankAccount = matchLine(sourceText, [
+    '开户行、账号',
+    '开户银行、账号',
+    '开户行账号',
+    '开户银行账号',
+  ]);
+  const bankSource = [result.bank, result.account, combinedBankAccount, sourceText].filter(Boolean).join('\n');
+  const explicitAccount = sourceText.match(/(?:银行账号|开户账号|收款账号|账号|账户)\s*[：:]?\s*([^\n\r]+)/)?.[1] || '';
+  const explicitBankCode = extractBankCodeCandidate(bankSource);
+  const account =
+    extractAccountCandidate(result.account || '') ||
+    extractAccountCandidate(combinedBankAccount) ||
+    extractAccountCandidate(explicitAccount) ||
+    extractAccountCandidate(bankSource);
+
+  const bank =
+    cleanBankName(result.bank || '') ||
+    cleanBankName(combinedBankAccount) ||
+    cleanBankName(sourceText.match(/(?:开户银行|开户行)\s*[：:]?\s*([^\n\r]+)/)?.[1] || '') ||
+    cleanBankName(result.account || '');
+  const addressPhoneLine = matchLine(sourceText, ['地址、电话', '地址，电话', '地址电话']);
+  const sourcePhone = normalizePhone(addressPhoneLine) || normalizePhone(matchLine(sourceText, ['电话', '联系电话', '公司电话']));
+  const sourceAddress = removePhoneFromAddress(addressPhoneLine || matchLine(sourceText, ['注册地址', '住所', '公司地址', '地址']));
+
+  return {
+    ...result,
+    address: removePhoneFromAddress(result.address || sourceAddress),
+    phone: sourcePhone || normalizePhone(result.phone || ''),
+    bank,
+    account,
+    bankCode: explicitBankCode || extractDigits(result.bankCode || ''),
+  };
+}
+
+function normalizePhone(value: string): string {
+  const text = value.trim();
+  if (!text) return '';
+  const mobile = text.match(/(?:\+?86[-\s]?)?1[3-9]\d{9}/)?.[0];
+  if (mobile) return mobile;
+  const landline = text.match(/0\d{2,3}[-\s]\d{7,8}/)?.[0];
+  return landline || '';
+}
+
+function removePhoneFromAddress(value: string): string {
+  return value
+    .replace(/(?:\+?86[-\s]?)?1[3-9]\d{9}/g, '')
+    .replace(/0\d{2,3}[-\s]?\d{7,8}/g, '')
+    .replace(/[，,、；;：:\s]+$/g, '')
+    .trim();
+}
+
+function parseTextLocally(text: string): IdentifiedParty {
+  const compactText = text.replace(/\r/g, '\n');
+  const taxId = compactText.match(/[0-9A-Z]{18}/)?.[0] || '';
+  const email = compactText.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0] || '';
+  const mobile = compactText.match(/(?:\+?86[-\s]?)?1[3-9]\d{9}/)?.[0] || '';
+  const addressPhoneLine = matchLine(compactText, ['地址、电话', '地址，电话', '地址电话']);
+  const labeledPhone = matchLine(compactText, ['电话', '联系电话', '公司电话']);
+  const account = matchLine(compactText, ['银行账号', '账号', '账户', '开户账号', '收款账号'])
+    || compactText.match(/\b\d{12,30}\b/)?.[0]
+    || '';
+
+  let name = matchLine(compactText, ['公司名称', '企业名称', '名称', '单位名称', '甲方']);
+  if (!name) {
+    name = compactText.match(/[\u4e00-\u9fa5（）()A-Za-z0-9]{4,}(?:有限责任公司|股份有限公司|有限公司|股份公司|集团有限公司|公司)/)?.[0] || '';
+  }
+
+  return normalizeBankFields({
+    name,
+    shortName: inferShortName(name),
+    taxId: matchLine(compactText, ['统一社会信用代码', '社会信用代码', '纳税人识别号', '税号']) || taxId,
+    address: removePhoneFromAddress(addressPhoneLine || matchLine(compactText, ['注册地址', '住所', '公司地址', '地址'])),
+    phone: normalizePhone(addressPhoneLine) || normalizePhone(labeledPhone) || mobile,
+    signatory: matchLine(compactText, ['法定代表人', '法人', '联系人', '负责人']),
+    signatoryPhone: matchLine(compactText, ['联系人手机号', '联系人电话', '手机号', '手机']) || mobile,
+    bank: matchLine(compactText, ['开户银行', '开户行', '银行']),
+    account,
+    bankCode: matchLine(compactText, ['联行号', '行号', '银行行号']),
+    email: matchLine(compactText, ['邮箱', '电子邮箱', '邮件']) || email,
+  }, compactText);
+}
+
+function hasIdentifiedInfo(result: IdentifiedParty): boolean {
+  return Boolean(result.name || result.taxId || result.address || result.phone || result.bank || result.account || result.email);
+}
+
 async function ocrGeneral(base64: string): Promise<string> {
   const imageBase64 = base64.includes(',') ? base64.split(',')[1] : base64;
 
@@ -144,7 +285,7 @@ async function parseTextByHunyuan(text: string): Promise<IdentifiedParty> {
     const match = content.match(/\{[\s\S]*\}/);
     if (match) {
       const parsed = JSON.parse(match[0]);
-      return {
+      return normalizeBankFields({
         name: parsed.name || '',
         shortName: parsed.shortName || undefined,
         taxId: parsed.taxId || '',
@@ -156,15 +297,25 @@ async function parseTextByHunyuan(text: string): Promise<IdentifiedParty> {
         account: parsed.account || '',
         bankCode: parsed.bankCode || '',
         email: parsed.email || '',
-      };
+      }, text);
     }
   } catch (err) {
     console.error('混元文字解析失败:', err);
+    const localResult = parseTextLocally(text);
+    if (hasIdentifiedInfo(localResult)) {
+      console.warn('已切换到本地规则解析企业信息。');
+      return localResult;
+    }
     if (err instanceof Error) {
       // 这里的 err 可能是 tencentRequest 抛出的详细错误
       throw new Error(`AI 解析失败: ${err.message}`);
     }
     throw new Error('AI 文字解析失败，请检查网络或稍后重试');
+  }
+
+  const localResult = parseTextLocally(text);
+  if (hasIdentifiedInfo(localResult)) {
+    return localResult;
   }
 
   throw new Error('无法从文字中提取企业信息，请检查输入内容');

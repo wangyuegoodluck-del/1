@@ -1,7 +1,7 @@
 import { Document, Packer, Paragraph, TextRun, AlignmentType, Table, TableRow, TableCell, WidthType, BorderStyle, Header, Footer, PageNumber, VerticalAlign, HeadingLevel, ImageRun, IImageOptions, Tab, TabStopType } from 'docx';
-import { saveAs } from 'file-saver';
 import { LOGO_BASE64 } from '../constants';
 import { ContractData } from './contractGenerator';
+import { downloadBlob } from './downloadFile';
 
 function getLogoUint8(): Uint8Array {
   try {
@@ -783,6 +783,6 @@ export const generateContract = async (data: ContractData) => {
     : (data.products[0]?.name || '');
   
   const fileName = `${data.contractNumber || ''} ${customerName} ${productSummary}借用合同.docx`.trim();
-  saveAs(blob, fileName);
+  downloadBlob(blob, fileName);
   console.log('Download triggered');
 };

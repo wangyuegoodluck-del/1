@@ -1,6 +1,8 @@
 import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
+import crypto from 'crypto';
+import fs from 'fs';
 import admin from 'firebase-admin';
 import { getFirestore, Timestamp, Query, OrderByDirection, QueryDocumentSnapshot } from 'firebase-admin/firestore';
 import firebaseConfig from './firebase-applet-config.json' with { type: 'json' };
@@ -13,7 +15,73 @@ const firebaseAdminApp = admin.initializeApp({
 
 const adminDb = getFirestore(firebaseAdminApp, firebaseConfig.firestoreDatabaseId);
 
+const presetUsers = [
+  {
+    email: 'zhouqiang@fairino.com',
+    password: '123456!',
+    uid: 'zhouqiang_mock_uid',
+    displayName: '周强',
+  },
+  {
+    email: 'liwei@fairino.com',
+    password: 'Fairino2026!',
+    uid: 'liwei_preset_uid',
+    displayName: '李伟',
+  },
+  {
+    email: 'zhangmin@fairino.com',
+    password: 'Fairino2026!',
+    uid: 'zhangmin_preset_uid',
+    displayName: '张敏',
+  },
+  {
+    email: 'songhaorui@fairino.com',
+    password: 'Fairino2026!',
+    uid: 'songhaorui_preset_uid',
+    displayName: '宋昊睿',
+  },
+];
+
+function loadLocalEnv() {
+  const envPath = path.join(process.cwd(), '.env.local');
+  if (!fs.existsSync(envPath)) return;
+
+  const content = fs.readFileSync(envPath, 'utf8');
+  for (const line of content.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+
+    const equalsIndex = trimmed.indexOf('=');
+    if (equalsIndex === -1) continue;
+
+    const key = trimmed.slice(0, equalsIndex).trim();
+    const value = trimmed
+      .slice(equalsIndex + 1)
+      .trim()
+      .replace(/^['"]|['"]$/g, '');
+
+    if (key && process.env[key] === undefined) {
+      process.env[key] = value;
+    }
+  }
+}
+
+function sha256(message: string, secret: string | Buffer = '', encoding?: 'hex'): string | Buffer {
+  const hmac = crypto.createHmac('sha256', secret);
+  hmac.update(message);
+  return encoding ? hmac.digest(encoding) : hmac.digest();
+}
+
+function getTencentSignature(secretKey: string, date: string, service: string, str2sign: string): string {
+  const kDate = sha256(date, `TC3${secretKey}`);
+  const kService = sha256(service, kDate);
+  const kSigning = sha256('tc3_request', kService);
+  return sha256(str2sign, kSigning, 'hex') as string;
+}
+
 async function startServer() {
+  loadLocalEnv();
+
   const app = express();
   const PORT = 3000;
 
@@ -25,8 +93,9 @@ async function startServer() {
     const { email, password } = req.body;
     // 注意：Firebase Admin 并没有直接的 "signInWithPassword" 接口
     // 我们需要通过 API 密钥请求 Auth 服务端，或者在这里做简单的账号匹配逻辑
-    // 针对用户提到的 "预置账号" 特殊处理
-    if (email === 'zhouqiang@fairino.com' && password === '123456!') {
+    // 针对 "预置账号" 特殊处理
+    const presetUser = presetUsers.find(user => user.email === email && user.password === password);
+    if (presetUser) {
       try {
         const userRef = adminDb.collection('users').where('email', '==', email).limit(1);
         const snapshot = await userRef.get();
@@ -34,9 +103,9 @@ async function startServer() {
         if (snapshot.empty) {
           // 自动创建
           const newUser = {
-            uid: 'zhouqiang_mock_uid',
-            email,
-            displayName: '周强',
+            uid: presetUser.uid,
+            email: presetUser.email,
+            displayName: presetUser.displayName,
             isAdmin: false,
             approved: true,
             createdAt: Timestamp.now(),
@@ -50,7 +119,7 @@ async function startServer() {
         }
         return res.json({ success: true, user: userDoc });
       } catch (err) {
-        console.error('Zhouqiang login error:', err);
+        console.error('Preset user login error:', err);
         return res.status(500).json({ success: false, message: 'Auth Proxy Error' });
       }
     }
@@ -144,25 +213,66 @@ async function startServer() {
 
   // API 路由：腾讯云 API 代理
   app.post('/api/tencent-proxy', async (req, res) => {
-    const { endpoint, host, authorization, action, version, timestamp, region, payload } = req.body;
+    const { service, action, version, region = 'ap-guangzhou', payload } = req.body;
+    const secretId = process.env.VITE_TENCENT_SECRET_ID || process.env.TENCENT_SECRET_ID;
+    const secretKey = process.env.VITE_TENCENT_SECRET_KEY || process.env.TENCENT_SECRET_KEY;
+
+    if (!secretId || !secretKey) {
+      return res.status(400).json({
+        error: 'ConfigurationError',
+        message: '腾讯云 AI 密钥未配置。请在 .env.local 中设置 VITE_TENCENT_SECRET_ID 和 VITE_TENCENT_SECRET_KEY，然后重启本地服务。',
+      });
+    }
+
+    if (!service || !action || !version || !payload) {
+      return res.status(400).json({
+        error: 'BadRequest',
+        message: '腾讯云代理请求缺少 service、action、version 或 payload。',
+      });
+    }
 
     try {
-      const response = await fetch(endpoint, {
+      const host = `${service}.tencentcloudapi.com`;
+      const contentType = 'application/json; charset=utf-8';
+      const timestamp = Math.floor(Date.now() / 1000);
+      const date = new Date(timestamp * 1000).toISOString().split('T')[0];
+      const requestPayload = JSON.stringify(payload);
+
+      const canonicalHeaders = `content-type:${contentType}\nhost:${host}\nx-tc-action:${String(action).toLowerCase()}\n`;
+      const signedHeaders = 'content-type;host;x-tc-action';
+      const hashedRequestPayload = crypto.createHash('sha256').update(requestPayload).digest('hex');
+      const canonicalRequest = [
+        'POST',
+        '/',
+        '',
+        canonicalHeaders,
+        signedHeaders,
+        hashedRequestPayload,
+      ].join('\n');
+
+      const algorithm = 'TC3-HMAC-SHA256';
+      const credentialScope = `${date}/${service}/tc3_request`;
+      const hashedCanonicalRequest = crypto.createHash('sha256').update(canonicalRequest).digest('hex');
+      const stringToSign = `${algorithm}\n${timestamp}\n${credentialScope}\n${hashedCanonicalRequest}`;
+      const signature = getTencentSignature(secretKey, date, service, stringToSign);
+      const authorization = `${algorithm} Credential=${secretId}/${credentialScope}, SignedHeaders=${signedHeaders}, Signature=${signature}`;
+
+      const response = await fetch(`https://${host}`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json; charset=utf-8',
           'Host': host,
           'Authorization': authorization,
+          'Content-Type': contentType,
           'X-TC-Action': action,
           'X-TC-Version': version,
           'X-TC-Timestamp': String(timestamp),
           'X-TC-Region': region,
         },
-        body: JSON.stringify(payload),
+        body: requestPayload,
       });
 
       const json = await response.json();
-      res.json(json);
+      res.status(response.ok ? 200 : response.status).json(json.Response || json);
     } catch (error) {
       console.error('Tencent API Proxy Error:', error);
       res.status(500).json({ error: 'Internal Server Error', message: error instanceof Error ? error.message : String(error) });
@@ -172,7 +282,10 @@ async function startServer() {
   // Vite 中间件处理
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: {
+        middlewareMode: true,
+        hmr: false,
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -184,8 +297,8 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running at http://0.0.0.0:${PORT}`);
+  app.listen(PORT, '127.0.0.1', () => {
+    console.log(`Server running at http://127.0.0.1:${PORT}`);
   });
 }
 

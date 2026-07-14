@@ -9,8 +9,9 @@ import { identifyPartyA } from './services/aiService';
 import { logout } from './services/firebase';
 import { User as FirebaseUser } from 'firebase/auth';
 import { LOGO_BASE64 } from './constants';
-import HiddenLogin from './components/HiddenLogin';
+import HiddenLogin, { AdminPanel } from './components/HiddenLogin';
 import UserManagerContent from './components/UserManagerContent';
+import { DEFAULT_PRODUCT_CATALOG } from './services/defaultProducts';
 import { 
   CustomerWithMemory, 
   subscribeToCustomersMemory, 
@@ -43,19 +44,6 @@ const partyBDefaults: PartyInfo = {
 
 // 高精度版价格加价
 const PRECISION_PRICE_DELTA = 2000;
-
-// 默认产品目录（当Firestore中没有数据时使用）
-const DEFAULT_PRODUCT_CATALOG = [
-  { name: 'FR3WMS协作机器人', unitPrice: 24800, unit: '套', hasPrecisionVersion: true },
-  { name: 'FR3WML协作机器人', unitPrice: 25800, unit: '套', hasPrecisionVersion: true },
-  { name: 'FR5WML协作机器人', unitPrice: 39800, unit: '套', hasPrecisionVersion: true },
-  { name: 'FR3（镜像）协作机器人', unitPrice: 22800, unit: '套', hasPrecisionVersion: true },
-  { name: 'FR5协作机器人', unitPrice: 23800, unit: '套', hasPrecisionVersion: true },
-  { name: 'FR10协作机器人', unitPrice: 36800, unit: '套', hasPrecisionVersion: true },
-  { name: 'FR16协作机器人', unitPrice: 36800, unit: '套', hasPrecisionVersion: true },
-  { name: 'FR20协作机器人', unitPrice: 46800, unit: '套', hasPrecisionVersion: true },
-  { name: 'FR30协作机器人', unitPrice: 46800, unit: '套', hasPrecisionVersion: true },
-];
 
 export default function App() {
   const [data, setData] = useState<ContractData>({
@@ -105,6 +93,7 @@ export default function App() {
   const [isParsingContact, setIsParsingContact] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
   const [showUserManager, setShowUserManager] = useState(false);
+  const [showProductManager, setShowProductManager] = useState(false);
   // 产品目录
   const [catalogProducts, setCatalogProducts] = useState<CatalogProduct[]>([]);
 
@@ -153,7 +142,7 @@ export default function App() {
       isMounted = false;
       unsubscribe();
     };
-  }, []);
+  }, [user]);
 
   // 订阅当前用户 Profile
   useEffect(() => {
@@ -369,56 +358,10 @@ export default function App() {
     setIsGenerating(true);
     console.log('Starting contract generation...', data);
     try {
-      // Save customer to memory on generation (仅销售合同保存客户档案)
-      if (data.contractType === 'sales' && user && data.partyA.name && data.partyA.taxId) {
-        const customerId = await saveCustomerMemory({
-          name: data.partyA.name,
-          shortName: data.partyA.shortName,
-          taxId: data.partyA.taxId,
-          address: data.partyA.address,
-          phone: data.partyA.phone,
-          bank: data.partyA.bank,
-          account: data.partyA.account,
-          bankCode: data.partyA.bankCode || '',
-          email: data.partyA.email || '',
-          contacts: data.partyA.signatory ? [{
-            name: data.partyA.signatory,
-            phone: data.partyA.signatoryPhone || '',
-            email: data.partyA.email,
-            isDefault: true,
-          }] : [],
-          deliveryAddresses: data.deliveryAddress ? [{
-            id: Date.now().toString(),
-            name: '默认地址',
-            address: data.deliveryAddress,
-            contactName: data.partyA.signatory || '',
-            contactPhone: data.partyA.signatoryPhone || '',
-            isDefault: true,
-          }] : [],
-          purchaseHistory: [],
-        });
-        
-        // 保存采购记录
-        if (customerId) {
-          await addPurchaseRecord(customerId, {
-            contractNumber: data.contractNumber,
-            date: Timestamp.now(),
-            products: data.products.map(p => ({
-              name: p.name,
-              quantity: p.quantity,
-              unitPrice: p.unitPriceIncTax,
-              unit: p.unit,
-            })),
-            totalAmount: totalAmount,
-          });
-        }
-      }
-      // 根据合同类型调用不同生成器
+      // 根据合同类型调用不同生成器。下载是主流程，不能被客户档案保存失败挡住。
       if (data.contractType === 'sales') {
         await generateSalesContract(data);
       } else {
-        // 借用合同：自动计算设备金额和押金
-        // 注意：借用合同生成器内部会处理 partyA/partyB 的映射（甲方=法奥，乙方=客户）
         const loanData = {
           ...data,
           equipmentAmount: data.products[0]?.unitPriceIncTax || 0,
@@ -427,6 +370,55 @@ export default function App() {
         await generateLoanContract(loanData);
       }
       console.log('Contract generation successful');
+
+      // Save customer to memory on generation (仅销售合同保存客户档案)
+      if (data.contractType === 'sales' && user && data.partyA.name && data.partyA.taxId) {
+        try {
+          const customerId = await saveCustomerMemory({
+            name: data.partyA.name,
+            shortName: data.partyA.shortName,
+            taxId: data.partyA.taxId,
+            address: data.partyA.address,
+            phone: data.partyA.phone,
+            bank: data.partyA.bank,
+            account: data.partyA.account,
+            bankCode: data.partyA.bankCode || '',
+            email: data.partyA.email || '',
+            contacts: data.partyA.signatory ? [{
+              name: data.partyA.signatory,
+              phone: data.partyA.signatoryPhone || '',
+              email: data.partyA.email,
+              isDefault: true,
+            }] : [],
+            deliveryAddresses: data.deliveryAddress ? [{
+              id: Date.now().toString(),
+              name: '默认地址',
+              address: data.deliveryAddress,
+              contactName: data.partyA.signatory || '',
+              contactPhone: data.partyA.signatoryPhone || '',
+              isDefault: true,
+            }] : [],
+            purchaseHistory: [],
+          });
+
+          // 保存采购记录
+          if (customerId) {
+            await addPurchaseRecord(customerId, {
+              contractNumber: data.contractNumber,
+              date: Timestamp.now(),
+              products: data.products.map(p => ({
+                name: p.name,
+                quantity: p.quantity,
+                unitPrice: p.unitPriceIncTax,
+                unit: p.unit,
+              })),
+              totalAmount: totalAmount,
+            });
+          }
+        } catch (saveError) {
+          console.warn('合同已生成，但客户档案或采购记录保存失败:', saveError);
+        }
+      }
     } catch (error) { 
       console.error('Contract generation failed:', error);
       const errorMessage = error instanceof Error ? error.message : String(error);
@@ -476,6 +468,16 @@ export default function App() {
                 >
                   {isExporting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Download className="w-4 h-4" />}
                   <span>数据导出</span>
+                </button>
+              )}
+              {isAdmin && (
+                <button
+                  onClick={() => setShowProductManager(true)}
+                  className="flex items-center gap-2 px-3 py-1.5 text-xs font-bold text-purple-600 bg-purple-50 hover:bg-purple-100 rounded-xl transition-all border border-purple-100"
+                  title="产品库管理"
+                >
+                  <Package className="w-4 h-4" />
+                  <span>产品库</span>
                 </button>
               )}
               {isAdmin && (
@@ -1341,6 +1343,13 @@ export default function App() {
               </div>
             </motion.div>
           </>
+        )}
+      </AnimatePresence>
+
+      {/* Product Manager Modal */}
+      <AnimatePresence>
+        {showProductManager && isAdmin && (
+          <AdminPanel onClose={() => setShowProductManager(false)} />
         )}
       </AnimatePresence>
 

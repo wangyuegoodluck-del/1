@@ -1,16 +1,24 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Lock, X, User, LogOut, Settings, Shield, Users, Package, Plus, Edit2, Trash2, Search } from 'lucide-react';
+import { Lock, X, User, LogOut, Settings, Shield, Users, Package, Plus, Trash2, Search } from 'lucide-react';
 import { auth, db } from '../services/firebase';
 import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import { loginWithEmail, logout, registerWithEmail } from '../services/firebase';
 import { doc, setDoc, Timestamp, updateDoc } from 'firebase/firestore';
 import { isCurrentUserAdmin, UserProfile, subscribeToUserProfile, CatalogProduct, addCatalogProduct, updateCatalogProduct, deleteCatalogProduct, subscribeToCatalogProducts, subscribeToAllUsers, updateUserApproval } from '../services/userService';
+import { DEFAULT_PRODUCT_CATALOG } from '../services/defaultProducts';
 
 interface HiddenLoginProps {
   onLogin?: (user: FirebaseUser, isAdmin: boolean) => void;
   onLogout?: () => void;
 }
+
+const PRESET_LOGIN_EMAILS = [
+  'zhouqiang@fairino.com',
+  'liwei@fairino.com',
+  'zhangmin@fairino.com',
+  'songhaorui@fairino.com',
+];
 
 export default function HiddenLogin({ onLogin, onLogout }: HiddenLoginProps) {
   const [isVisible, setIsVisible] = useState(false);
@@ -121,8 +129,8 @@ export default function HiddenLogin({ onLogin, onLogout }: HiddenLoginProps) {
     };
 
     try {
-      if (email === 'zhouqiang@fairino.com' && password === '123456!') {
-        // zhouqiang 强制走 API，因为他通常在大陆且无 VPN
+      if (PRESET_LOGIN_EMAILS.includes(email.trim().toLowerCase())) {
+        // 预置账号强制走 API，避免本地没有真实 Firebase Auth 账号时登录失败
         await tryApiLogin();
         return;
       }
@@ -382,7 +390,7 @@ export default function HiddenLogin({ onLogin, onLogout }: HiddenLoginProps) {
 }
 
 // Admin Panel Component
-function AdminPanel({ onClose }: { onClose: () => void }) {
+export function AdminPanel({ onClose }: { onClose: () => void }) {
   const [activeTab, setActiveTab] = useState<'products' | 'users'>('products');
 
   return (
@@ -451,18 +459,31 @@ function AdminPanel({ onClose }: { onClose: () => void }) {
 
 // Product Management Component
 function ProductManagement() {
+  const defaultColumnWidths = {
+    name: 280,
+    model: 160,
+    unitPrice: 140,
+    unit: 100,
+    precision: 120,
+    actions: 120,
+  };
   const [products, setProducts] = useState<CatalogProduct[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
-  const [showForm, setShowForm] = useState(false);
-  const [editingProduct, setEditingProduct] = useState<CatalogProduct | null>(null);
-  const [formData, setFormData] = useState({
+  const [savingProductId, setSavingProductId] = useState<string | null>(null);
+  const [columnWidths, setColumnWidths] = useState(() => {
+    try {
+      const saved = localStorage.getItem('product_column_widths');
+      return saved ? { ...defaultColumnWidths, ...JSON.parse(saved) } : defaultColumnWidths;
+    } catch {
+      return defaultColumnWidths;
+    }
+  });
+  const [newProduct, setNewProduct] = useState({
     name: '',
     model: '',
     unitPrice: '',
     unit: '套',
-    category: '',
-    description: '',
     hasPrecisionVersion: false,
   });
 
@@ -477,77 +498,149 @@ function ProductManagement() {
   }, []);
 
   // Filter products
+  const sortByName = <T extends { name: string }>(items: T[]) =>
+    [...items].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN', { numeric: true }));
+
   const filteredProducts = products.filter(p =>
     p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    p.model?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    p.category?.toLowerCase().includes(searchQuery.toLowerCase())
+    p.model?.toLowerCase().includes(searchQuery.toLowerCase())
   );
+  const defaultProducts = DEFAULT_PRODUCT_CATALOG.filter(p =>
+    p.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    p.model?.toLowerCase().includes(searchQuery.toLowerCase())
+  );
+  const visibleProducts = products.length > 0 ? sortByName(filteredProducts) : sortByName(defaultProducts);
+  const tableWidth = Object.values(columnWidths).reduce((sum, width) => sum + width, 0);
 
-  // Reset form
-  const resetForm = () => {
-    setFormData({
-      name: '',
-      model: '',
-      unitPrice: '',
-      unit: '套',
-      category: '',
-      description: '',
-      hasPrecisionVersion: false,
-    });
-    setEditingProduct(null);
+  const resizeColumn = (key: keyof typeof defaultColumnWidths, event: React.MouseEvent<HTMLSpanElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const startX = event.clientX;
+    const startWidth = columnWidths[key];
+    const minWidths: Record<keyof typeof defaultColumnWidths, number> = {
+      name: 180,
+      model: 110,
+      unitPrice: 100,
+      unit: 80,
+      precision: 100,
+      actions: 100,
+    };
+
+    const handleMouseMove = (moveEvent: MouseEvent) => {
+      const nextWidth = Math.max(minWidths[key], startWidth + moveEvent.clientX - startX);
+      setColumnWidths((prev) => {
+        const next = { ...prev, [key]: nextWidth };
+        localStorage.setItem('product_column_widths', JSON.stringify(next));
+        return next;
+      });
+    };
+
+    const handleMouseUp = () => {
+      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('mouseup', handleMouseUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('mouseup', handleMouseUp);
   };
 
-  // Open add form
-  const handleAdd = () => {
-    resetForm();
-    setShowForm(true);
+  const renderHeader = (
+    key: keyof typeof defaultColumnWidths,
+    label: string,
+    align: 'left' | 'center' | 'right' = 'left'
+  ) => {
+    const alignClass = align === 'right' ? 'text-right' : align === 'center' ? 'text-center' : 'text-left';
+
+    return (
+    <th
+        className={`group relative px-4 py-3 ${alignClass} text-sm font-medium text-gray-700 select-none border-r border-gray-200 last:border-r-0`}
+        style={{ width: columnWidths[key] }}
+      >
+        {label}
+        <span
+          onMouseDown={(event) => resizeColumn(key, event)}
+          onDoubleClick={() => {
+            const next = { ...columnWidths, [key]: defaultColumnWidths[key] };
+            setColumnWidths(next);
+            localStorage.setItem('product_column_widths', JSON.stringify(next));
+          }}
+          className="absolute -right-1 top-0 z-10 flex h-full w-3 cursor-col-resize items-center justify-center"
+          title="拖动调整列宽"
+        >
+          <span className="h-7 w-1 rounded-full bg-gray-300 transition-colors group-hover:bg-purple-500" />
+        </span>
+      </th>
+    );
   };
 
-  // Open edit form
-  const handleEdit = (product: CatalogProduct) => {
-    setEditingProduct(product);
-    setFormData({
-      name: product.name,
-      model: product.model || '',
-      unitPrice: product.unitPrice.toString(),
-      unit: product.unit,
-      category: product.category || '',
-      description: product.description || '',
-      hasPrecisionVersion: product.hasPrecisionVersion ?? false,
-    });
-    setShowForm(true);
+  const saveDefaultProducts = async (
+    options: {
+      skipName?: string;
+      updateName?: string;
+      updates?: Partial<CatalogProduct>;
+    } = {}
+  ) => {
+    for (const product of DEFAULT_PRODUCT_CATALOG) {
+      if (product.name === options.skipName) continue;
+      await addCatalogProduct({
+        ...product,
+        ...(product.name === options.updateName ? options.updates : {}),
+        isActive: true,
+      });
+    }
   };
 
-  // Save product
-  const handleSave = async () => {
-    if (!formData.name.trim() || !formData.unitPrice.trim()) {
+  const handleDefaultUpdate = async (product: typeof DEFAULT_PRODUCT_CATALOG[number], updates: Partial<CatalogProduct>) => {
+    try {
+      await saveDefaultProducts({ updateName: product.name, updates });
+    } catch (error) {
+      console.error('Update default product error:', error);
+      alert('保存失败: ' + (error instanceof Error ? error.message : '未知错误'));
+    }
+  };
+
+  const handleInlineUpdate = async (product: CatalogProduct, updates: Partial<CatalogProduct>) => {
+    setSavingProductId(product.id);
+    try {
+      await updateCatalogProduct(product.id, updates);
+    } catch (error) {
+      console.error('Update product error:', error);
+      alert('保存失败: ' + (error instanceof Error ? error.message : '未知错误'));
+    } finally {
+      setSavingProductId(null);
+    }
+  };
+
+  const handleCreateFromRow = async () => {
+    if (!newProduct.name.trim() || !newProduct.unitPrice.trim()) {
       alert('请填写产品名称和单价');
       return;
     }
 
     try {
-      const productData = {
-        name: formData.name.trim(),
-        model: formData.model.trim() || undefined,
-        unitPrice: parseFloat(formData.unitPrice),
-        unit: formData.unit.trim() || '套',
-        category: formData.category.trim() || undefined,
-        description: formData.description.trim() || undefined,
+      await addCatalogProduct({
+        name: newProduct.name.trim(),
+        model: newProduct.model.trim() || undefined,
+        unitPrice: parseFloat(newProduct.unitPrice),
+        unit: newProduct.unit.trim() || '套',
         isActive: true,
-        hasPrecisionVersion: formData.hasPrecisionVersion,
-      };
-
-      if (editingProduct) {
-        await updateCatalogProduct(editingProduct.id, productData);
-      } else {
-        await addCatalogProduct(productData);
-      }
-
-      setShowForm(false);
-      resetForm();
+        hasPrecisionVersion: newProduct.hasPrecisionVersion,
+      });
+      setNewProduct({
+        name: '',
+        model: '',
+        unitPrice: '',
+        unit: '套',
+        hasPrecisionVersion: false,
+      });
     } catch (error) {
-      console.error('Save product error:', error);
-      alert('保存失败: ' + (error instanceof Error ? error.message : '未知错误'));
+      console.error('Create product error:', error);
+      alert('新增失败: ' + (error instanceof Error ? error.message : '未知错误'));
     }
   };
 
@@ -563,18 +656,27 @@ function ProductManagement() {
     }
   };
 
+  const handleDeleteDefault = async (product: typeof DEFAULT_PRODUCT_CATALOG[number]) => {
+    if (!confirm(`确定要删除产品 "${product.name}" 吗？`)) return;
+
+    try {
+      await saveDefaultProducts({ skipName: product.name });
+    } catch (error) {
+      console.error('Delete default product error:', error);
+      alert('删除失败: ' + (error instanceof Error ? error.message : '未知错误'));
+    }
+  };
+
   return (
     <div className="space-y-4">
       {/* Header */}
       <div className="flex justify-between items-center">
-        <h3 className="text-lg font-medium">标准产品库</h3>
-        <button
-          onClick={handleAdd}
-          className="flex items-center gap-2 px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
-        >
-          <Plus className="w-4 h-4" />
-          添加产品
-        </button>
+        <div>
+          <h3 className="text-lg font-medium">标准产品库</h3>
+          {products.length === 0 && (
+            <p className="text-sm text-amber-600 mt-1">当前显示的是系统默认产品，编辑或删除后会自动保存为正式产品库。</p>
+          )}
+        </div>
       </div>
 
       {/* Search */}
@@ -584,7 +686,7 @@ function ProductManagement() {
           type="text"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
-          placeholder="搜索产品名称、型号或分类..."
+          placeholder="搜索产品名称或型号..."
           className="w-full pl-10 pr-4 py-2 border border-gray-200 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
         />
       </div>
@@ -595,206 +697,212 @@ function ProductManagement() {
           <div className="animate-spin w-8 h-8 border-2 border-purple-600 border-t-transparent rounded-full mx-auto mb-3" />
           <p>加载中...</p>
         </div>
-      ) : filteredProducts.length === 0 ? (
+      ) : visibleProducts.length === 0 ? (
         <div className="bg-gray-50 rounded-lg p-8 text-center text-gray-500">
           <Package className="w-12 h-12 mx-auto mb-3 opacity-50" />
           <p>{searchQuery ? '没有找到匹配的产品' : '暂无产品，请点击上方按钮添加'}</p>
         </div>
       ) : (
-        <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-          <table className="w-full">
+        <div className="bg-white border border-gray-200 rounded-lg overflow-x-auto">
+          <table className="w-full table-fixed" style={{ minWidth: tableWidth }}>
             <thead className="bg-gray-50">
               <tr>
-                <th className="px-4 py-3 text-left text-sm font-medium text-gray-700">产品名称</th>
-                <th className="px-4 py-3 text-left text-sm font-medium text-gray-700">型号</th>
-                <th className="px-4 py-3 text-left text-sm font-medium text-gray-700">分类</th>
-                <th className="px-4 py-3 text-right text-sm font-medium text-gray-700">单价</th>
-                <th className="px-4 py-3 text-center text-sm font-medium text-gray-700">单位</th>
-                <th className="px-4 py-3 text-center text-sm font-medium text-gray-700">高精度版</th>
-                <th className="px-4 py-3 text-center text-sm font-medium text-gray-700">操作</th>
+                {renderHeader('name', '产品名称')}
+                {renderHeader('model', '型号')}
+                {renderHeader('unitPrice', '单价', 'right')}
+                {renderHeader('unit', '单位', 'center')}
+                {renderHeader('precision', '高精度版', 'center')}
+                {renderHeader('actions', '操作', 'center')}
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-200">
-              {filteredProducts.map((product) => (
-                <tr key={product.id} className="hover:bg-gray-50">
-                  <td className="px-4 py-3 text-sm text-gray-900">{product.name}</td>
-                  <td className="px-4 py-3 text-sm text-gray-600">{product.model || '-'}</td>
-                  <td className="px-4 py-3 text-sm text-gray-600">{product.category || '-'}</td>
-                  <td className="px-4 py-3 text-sm text-gray-900 text-right">¥{product.unitPrice.toLocaleString()}</td>
-                  <td className="px-4 py-3 text-sm text-gray-600 text-center">{product.unit}</td>
-                  <td className="px-4 py-3 text-center">
-                    {product.hasPrecisionVersion
-                      ? <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-amber-100 text-amber-700">⚡ 支持</span>
-                      : <span className="text-gray-400 text-xs">—</span>
+              {visibleProducts.map((product) => (
+                <tr key={'id' in product ? product.id : product.name} className="hover:bg-gray-50">
+                  <td className="px-3 py-2 border-r border-gray-100">
+                    {'id' in product ? (
+                      <input
+                        defaultValue={product.name}
+                        onBlur={(e) => {
+                          const value = e.target.value.trim();
+                          if (value && value !== product.name) handleInlineUpdate(product, { name: value });
+                        }}
+                        className="w-full px-2 py-1.5 rounded border border-transparent hover:border-gray-200 focus:border-purple-400 focus:ring-1 focus:ring-purple-300 outline-none text-sm"
+                      />
+                    ) : (
+                      <input
+                        defaultValue={product.name}
+                        onBlur={(e) => {
+                          const value = e.target.value.trim();
+                          if (value && value !== product.name) handleDefaultUpdate(product, { name: value });
+                        }}
+                        className="w-full px-2 py-1.5 rounded border border-transparent hover:border-gray-200 focus:border-purple-400 focus:ring-1 focus:ring-purple-300 outline-none text-sm"
+                      />
+                    )}
+                  </td>
+                  <td className="px-3 py-2 border-r border-gray-100">
+                    {'id' in product ? (
+                      <input
+                        defaultValue={product.model || ''}
+                        onBlur={(e) => {
+                          const value = e.target.value.trim();
+                          if (value !== (product.model || '')) handleInlineUpdate(product, { model: value || undefined });
+                        }}
+                        className="w-full px-2 py-1.5 rounded border border-transparent hover:border-gray-200 focus:border-purple-400 focus:ring-1 focus:ring-purple-300 outline-none text-sm"
+                      />
+                    ) : (
+                      <input
+                        defaultValue={product.model || ''}
+                        onBlur={(e) => {
+                          const value = e.target.value.trim();
+                          if (value !== (product.model || '')) handleDefaultUpdate(product, { model: value || undefined });
+                        }}
+                        className="w-full px-2 py-1.5 rounded border border-transparent hover:border-gray-200 focus:border-purple-400 focus:ring-1 focus:ring-purple-300 outline-none text-sm"
+                      />
+                    )}
+                  </td>
+                  <td className="px-3 py-2 border-r border-gray-100">
+                    {'id' in product ? (
+                      <input
+                        type="number"
+                        defaultValue={product.unitPrice}
+                        onBlur={(e) => {
+                          const value = parseFloat(e.target.value);
+                          if (!Number.isNaN(value) && value !== product.unitPrice) handleInlineUpdate(product, { unitPrice: value });
+                        }}
+                        className="w-full px-2 py-1.5 rounded border border-transparent hover:border-gray-200 focus:border-purple-400 focus:ring-1 focus:ring-purple-300 outline-none text-sm text-right"
+                      />
+                    ) : (
+                      <input
+                        type="number"
+                        defaultValue={product.unitPrice}
+                        onBlur={(e) => {
+                          const value = parseFloat(e.target.value);
+                          if (!Number.isNaN(value) && value !== product.unitPrice) handleDefaultUpdate(product, { unitPrice: value });
+                        }}
+                        className="w-full px-2 py-1.5 rounded border border-transparent hover:border-gray-200 focus:border-purple-400 focus:ring-1 focus:ring-purple-300 outline-none text-sm text-right"
+                      />
+                    )}
+                  </td>
+                  <td className="px-3 py-2 border-r border-gray-100">
+                    {'id' in product ? (
+                      <input
+                        defaultValue={product.unit}
+                        onBlur={(e) => {
+                          const value = e.target.value.trim() || '套';
+                          if (value !== product.unit) handleInlineUpdate(product, { unit: value });
+                        }}
+                        className="w-full px-2 py-1.5 rounded border border-transparent hover:border-gray-200 focus:border-purple-400 focus:ring-1 focus:ring-purple-300 outline-none text-sm text-center"
+                      />
+                    ) : (
+                      <input
+                        defaultValue={product.unit}
+                        onBlur={(e) => {
+                          const value = e.target.value.trim() || '套';
+                          if (value !== product.unit) handleDefaultUpdate(product, { unit: value });
+                        }}
+                        className="w-full px-2 py-1.5 rounded border border-transparent hover:border-gray-200 focus:border-purple-400 focus:ring-1 focus:ring-purple-300 outline-none text-sm text-center"
+                      />
+                    )}
+                  </td>
+                  <td className="px-4 py-3 text-center border-r border-gray-100">
+                    {'id' in product ? (
+                      <input
+                        type="checkbox"
+                        defaultChecked={product.hasPrecisionVersion ?? false}
+                        onChange={(e) => handleInlineUpdate(product, { hasPrecisionVersion: e.target.checked })}
+                        className="w-4 h-4 text-purple-600 border-gray-300 rounded focus:ring-purple-500"
+                      />
+                    ) : (
+                      <input
+                        type="checkbox"
+                        defaultChecked={product.hasPrecisionVersion ?? false}
+                        onChange={(e) => handleDefaultUpdate(product, { hasPrecisionVersion: e.target.checked })}
+                        className="w-4 h-4 text-purple-600 border-gray-300 rounded focus:ring-purple-500"
+                      />
+                    )
                     }
                   </td>
                   <td className="px-4 py-3 text-center">
-                    <div className="flex items-center justify-center gap-2">
+                    {'id' in product ? (
+                      <div className="flex items-center justify-center gap-2">
+                        {savingProductId === product.id && <span className="text-xs text-purple-600">保存中</span>}
+                        <button
+                          onClick={() => handleDelete(product)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 rounded"
+                          title="删除"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                          删除
+                        </button>
+                      </div>
+                    ) : (
                       <button
-                        onClick={() => handleEdit(product)}
-                        className="p-1 text-blue-600 hover:bg-blue-50 rounded"
-                        title="编辑"
-                      >
-                        <Edit2 className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={() => handleDelete(product)}
-                        className="p-1 text-red-600 hover:bg-red-50 rounded"
+                        onClick={() => handleDeleteDefault(product)}
+                        className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50 rounded"
                         title="删除"
                       >
-                        <Trash2 className="w-4 h-4" />
+                        <Trash2 className="w-3.5 h-3.5" />
+                        删除
                       </button>
-                    </div>
+                    )}
                   </td>
                 </tr>
               ))}
+              <tr className="bg-purple-50/40">
+                <td className="px-3 py-2 border-r border-gray-100">
+                  <input
+                    value={newProduct.name}
+                    onChange={(e) => setNewProduct({ ...newProduct, name: e.target.value })}
+                    placeholder="新增产品名称"
+                    className="w-full px-2 py-1.5 rounded border border-purple-100 focus:border-purple-400 focus:ring-1 focus:ring-purple-300 outline-none text-sm bg-white"
+                  />
+                </td>
+                <td className="px-3 py-2 border-r border-gray-100">
+                  <input
+                    value={newProduct.model}
+                    onChange={(e) => setNewProduct({ ...newProduct, model: e.target.value })}
+                    placeholder="型号"
+                    className="w-full px-2 py-1.5 rounded border border-purple-100 focus:border-purple-400 focus:ring-1 focus:ring-purple-300 outline-none text-sm bg-white"
+                  />
+                </td>
+                <td className="px-3 py-2 border-r border-gray-100">
+                  <input
+                    type="number"
+                    value={newProduct.unitPrice}
+                    onChange={(e) => setNewProduct({ ...newProduct, unitPrice: e.target.value })}
+                    placeholder="单价"
+                    className="w-full px-2 py-1.5 rounded border border-purple-100 focus:border-purple-400 focus:ring-1 focus:ring-purple-300 outline-none text-sm text-right bg-white"
+                  />
+                </td>
+                <td className="px-3 py-2 border-r border-gray-100">
+                  <input
+                    value={newProduct.unit}
+                    onChange={(e) => setNewProduct({ ...newProduct, unit: e.target.value })}
+                    className="w-full px-2 py-1.5 rounded border border-purple-100 focus:border-purple-400 focus:ring-1 focus:ring-purple-300 outline-none text-sm text-center bg-white"
+                  />
+                </td>
+                <td className="px-4 py-3 text-center border-r border-gray-100">
+                  <input
+                    type="checkbox"
+                    checked={newProduct.hasPrecisionVersion}
+                    onChange={(e) => setNewProduct({ ...newProduct, hasPrecisionVersion: e.target.checked })}
+                    className="w-4 h-4 text-purple-600 border-gray-300 rounded focus:ring-purple-500"
+                  />
+                </td>
+                <td className="px-4 py-3 text-center">
+                  <button
+                    onClick={handleCreateFromRow}
+                    className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium text-purple-700 bg-white border border-purple-200 rounded hover:bg-purple-50"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    保存
+                  </button>
+                </td>
+              </tr>
             </tbody>
           </table>
         </div>
       )}
-
-      {/* Add/Edit Form Modal */}
-      <AnimatePresence>
-        {showForm && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/50 z-[70] flex items-center justify-center p-4"
-            onClick={() => setShowForm(false)}
-          >
-            <motion.div
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
-              className="bg-white rounded-xl shadow-2xl w-full max-w-lg"
-              onClick={(e) => e.stopPropagation()}
-            >
-              <div className="px-6 py-4 border-b flex items-center justify-between">
-                <h4 className="text-lg font-semibold">
-                  {editingProduct ? '编辑产品' : '添加产品'}
-                </h4>
-                <button
-                  onClick={() => setShowForm(false)}
-                  className="text-gray-400 hover:text-gray-600"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-
-              <div className="p-6 space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    产品名称 <span className="text-red-500">*</span>
-                  </label>
-                  <input
-                    type="text"
-                    value={formData.name}
-                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                    placeholder="例如：FR5协作机器人"
-                  />
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      型号
-                    </label>
-                    <input
-                      type="text"
-                      value={formData.model}
-                      onChange={(e) => setFormData({ ...formData, model: e.target.value })}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                      placeholder="例如：FR5-1000"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      分类
-                    </label>
-                    <input
-                      type="text"
-                      value={formData.category}
-                      onChange={(e) => setFormData({ ...formData, category: e.target.value })}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                      placeholder="例如：协作机器人"
-                    />
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      单价 <span className="text-red-500">*</span>
-                    </label>
-                    <input
-                      type="number"
-                      value={formData.unitPrice}
-                      onChange={(e) => setFormData({ ...formData, unitPrice: e.target.value })}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                      placeholder="例如：128000"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">
-                      单位
-                    </label>
-                    <input
-                      type="text"
-                      value={formData.unit}
-                      onChange={(e) => setFormData({ ...formData, unit: e.target.value })}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                      placeholder="例如：套"
-                    />
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-1">
-                    产品描述
-                  </label>
-                  <textarea
-                    value={formData.description}
-                    onChange={(e) => setFormData({ ...formData, description: e.target.value })}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent"
-                    rows={3}
-                    placeholder="产品详细描述..."
-                  />
-                </div>
-
-                <div className="flex items-center gap-3 p-3 bg-amber-50 border border-amber-200 rounded-lg">
-                  <input
-                    type="checkbox"
-                    id="hasPrecisionVersion"
-                    checked={formData.hasPrecisionVersion}
-                    onChange={(e) => setFormData({ ...formData, hasPrecisionVersion: e.target.checked })}
-                    className="w-4 h-4 text-amber-600 border-gray-300 rounded focus:ring-amber-500"
-                  />
-                  <label htmlFor="hasPrecisionVersion" className="text-sm font-medium text-amber-800 cursor-pointer">
-                    ⚡ 支持高精度版（在合同清单中可切换，高精度版单价 = 标准价 + ¥2,000）
-                  </label>
-                </div>
-              </div>
-
-              <div className="px-6 py-4 border-t flex justify-end gap-3">
-                <button
-                  onClick={() => setShowForm(false)}
-                  className="px-4 py-2 text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
-                >
-                  取消
-                </button>
-                <button
-                  onClick={handleSave}
-                  className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition-colors"
-                >
-                  {editingProduct ? '保存修改' : '添加产品'}
-                </button>
-              </div>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
     </div>
   );
 }

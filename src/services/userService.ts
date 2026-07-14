@@ -14,6 +14,8 @@ import {
 import { handleFirestoreError, OperationType } from './firebase';
 import { apiGet, apiSet, apiPoll } from './apiDataHub';
 
+const CUSTOMER_HISTORY_SCOPE = (import.meta.env.VITE_CUSTOMER_HISTORY_SCOPE || '').trim();
+
 // User Profile in Firestore
 export interface UserProfile {
   uid: string;
@@ -48,6 +50,7 @@ export interface DeliveryAddress {
 export interface CustomerWithMemory {
   id: string;
   userId: string; // 创建该客户的用户ID
+  historyScope?: string; // 分发包可使用独立历史空间，避免带出旧合同记录
   name: string;
   shortName?: string;
   taxId: string;
@@ -96,6 +99,12 @@ export interface CatalogProduct {
   hasPrecisionVersion?: boolean; // 是否支持高精度版（比标准版贵2000元）
   createdAt: Timestamp;
   updatedAt: Timestamp;
+}
+
+function removeUndefinedFields<T extends Record<string, unknown>>(data: T): T {
+  return Object.fromEntries(
+    Object.entries(data).filter(([, value]) => value !== undefined)
+  ) as T;
 }
 
 // Check if current user is admin
@@ -248,6 +257,7 @@ export async function saveCustomerMemory(customer: Omit<CustomerWithMemory, 'id'
     ...customer,
     id,
     userId: user.uid,
+    ...(CUSTOMER_HISTORY_SCOPE ? { historyScope: CUSTOMER_HISTORY_SCOPE } : {}),
     createdAt: now,
     updatedAt: now,
   };
@@ -314,9 +324,13 @@ export function subscribeToCustomersMemory(callback: (customers: CustomerWithMem
       const setupDirectSubscription = () => {
         let q;
         if (isAdmin) {
-          q = query(collection(db, 'customers'));
+          q = CUSTOMER_HISTORY_SCOPE
+            ? query(collection(db, 'customers'), where('historyScope', '==', CUSTOMER_HISTORY_SCOPE))
+            : query(collection(db, 'customers'));
         } else {
-          q = query(collection(db, 'customers'), where('userId', '==', user.uid));
+          q = CUSTOMER_HISTORY_SCOPE
+            ? query(collection(db, 'customers'), where('userId', '==', user.uid), where('historyScope', '==', CUSTOMER_HISTORY_SCOPE))
+            : query(collection(db, 'customers'), where('userId', '==', user.uid));
         }
 
         innerUnsubscribe = onSnapshot(q, (snapshot) => {
@@ -335,9 +349,12 @@ export function subscribeToCustomersMemory(callback: (customers: CustomerWithMem
           try {
             let data: CustomerWithMemory[];
             if (admin) {
-              data = await apiPoll<CustomerWithMemory>('customers');
+              data = await apiPoll<CustomerWithMemory>('customers', CUSTOMER_HISTORY_SCOPE ? { historyScope: CUSTOMER_HISTORY_SCOPE } : {});
             } else {
-              data = await apiPoll<CustomerWithMemory>('customers', { userId: user.uid });
+              data = await apiPoll<CustomerWithMemory>('customers', {
+                userId: user.uid,
+                ...(CUSTOMER_HISTORY_SCOPE ? { historyScope: CUSTOMER_HISTORY_SCOPE } : {}),
+              });
             }
             if (!cancelled) callback(data);
           } catch (e) {
@@ -448,7 +465,9 @@ export async function exportContractDataCSV() {
 
   try {
     // 获取所有客户记录（包含购买记录）
-    const q = query(collection(db, 'customers'));
+    const q = CUSTOMER_HISTORY_SCOPE
+      ? query(collection(db, 'customers'), where('historyScope', '==', CUSTOMER_HISTORY_SCOPE))
+      : query(collection(db, 'customers'));
     const snapshot = await getDocs(q);
     const allCustomers = snapshot.docs.map(doc => doc.data() as CustomerWithMemory);
 
@@ -537,7 +556,7 @@ export async function addCatalogProduct(product: Omit<CatalogProduct, 'id' | 'cr
     const now = Timestamp.now();
     
     await setDoc(productRef, {
-      ...product,
+      ...removeUndefinedFields(product),
       id: productRef.id,
       createdAt: now,
       updatedAt: now,
@@ -557,7 +576,7 @@ export async function updateCatalogProduct(productId: string, updates: Partial<C
   try {
     const productRef = doc(db, 'products', productId);
     await updateDoc(productRef, {
-      ...updates,
+      ...removeUndefinedFields(updates),
       updatedAt: Timestamp.now(),
     });
   } catch (error) {

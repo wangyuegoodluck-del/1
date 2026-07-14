@@ -1,6 +1,6 @@
 import { Document, Packer, Paragraph, TextRun, AlignmentType, Table, TableRow, TableCell, WidthType, BorderStyle, Header, Footer, PageNumber, VerticalAlign, HeadingLevel, Tab, TabStopType, ImageRun, IImageOptions } from 'docx';
-import { saveAs } from 'file-saver';
 import { LOGO_BASE64 } from '../constants';
+import { downloadBlob } from './downloadFile';
 
 function getLogoUint8(): Uint8Array {
   try {
@@ -658,6 +658,6 @@ export const generateContract = async (data: ContractData) => {
     : (data.products[0]?.name || '');
   
   const fileName = `${data.contractNumber} ${customerName} ${productSummary}.docx`;
-  saveAs(blob, fileName);
+  downloadBlob(blob, fileName);
   console.log('Download triggered');
 };
