@@ -172,10 +172,20 @@ async function startServer() {
   ensureLocalDb();
 
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT || 3000);
+  const HOST = process.env.HOST || '0.0.0.0';
 
   // 解析 JSON 体
   app.use(express.json({ limit: '10mb' }));
+
+  app.get('/api/health', (_req, res) => {
+    res.json({
+      ok: true,
+      mode: 'local-json-db',
+      dbPath: getLocalDbPath(),
+      time: new Date().toISOString(),
+    });
+  });
 
   // API 路由：本地认证。默认不依赖 Firebase/Google，适合大陆无 VPN 环境。
   app.post('/api/auth/login', async (req, res) => {
@@ -403,8 +413,9 @@ async function startServer() {
     });
   }
 
-  const server = app.listen(PORT, '127.0.0.1', () => {
-    console.log(`Server running at http://127.0.0.1:${PORT}`);
+  const server = app.listen(PORT, HOST, () => {
+    console.log(`Server running at http://${HOST}:${PORT}`);
+    console.log(`Local browser URL: http://127.0.0.1:${PORT}`);
   });
   server.on('error', (error) => {
     console.error('Server listen error:', error);

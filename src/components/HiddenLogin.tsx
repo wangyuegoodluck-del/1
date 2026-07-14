@@ -108,7 +108,7 @@ export default function HiddenLogin({ onLogin, onLogout }: HiddenLoginProps) {
           return false;
         }
       } catch {
-        setError('服务器连接失败，请检查网络');
+        setError('服务器连接失败：请确认已通过 npm run dev / npm start 启动后端，或线上部署使用的是 Node Web Service 而不是纯静态页面。');
         return false;
       }
     };
