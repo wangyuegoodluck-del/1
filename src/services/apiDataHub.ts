@@ -72,21 +72,39 @@ export async function apiGet(collection: string, docOrParams?: string | Record<s
   } else if (docOrParams) {
     query = new URLSearchParams(docOrParams as Record<string, string>).toString();
   }
-  
-  const response = await fetch(`/api/db/${collection}?${query}`);
-  if (!response.ok) throw new Error('API DB Get Error');
+
+  const primaryUrl = `/api/db/${collection}?${query}`;
+  const fallbackUrl = `/.netlify/functions/api?path=${encodeURIComponent(`db/${collection}`)}${query ? `&${query}` : ''}`;
+  const response = await fetchWithFallback(primaryUrl, fallbackUrl);
+  if (!response.ok) throw new Error(`API DB Get Error (${response.status})`);
   const data = (await response.json()) as unknown;
   return deepConvertTimestamps(data);
 }
 
 export async function apiSet(collection: string, docId: string | null, data: unknown) {
-  const response = await fetch(`/api/db/${collection}`, {
+  const init: RequestInit = {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ docId, data })
-  });
-  if (!response.ok) throw new Error('API DB Set Error');
+  };
+  const response = await fetchWithFallback(
+    `/api/db/${collection}`,
+    `/.netlify/functions/api?path=${encodeURIComponent(`db/${collection}`)}`,
+    init,
+  );
+  if (!response.ok) throw new Error(`API DB Set Error (${response.status})`);
   return response.json();
+}
+
+async function fetchWithFallback(primaryUrl: string, fallbackUrl: string, init?: RequestInit) {
+  try {
+    const response = await fetch(primaryUrl, init);
+    const contentType = response.headers.get('content-type') || '';
+    if (response.ok || contentType.includes('application/json')) return response;
+  } catch {
+    // try fallback below
+  }
+  return fetch(fallbackUrl, init);
 }
 
 /**

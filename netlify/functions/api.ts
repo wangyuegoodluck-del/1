@@ -176,7 +176,7 @@ async function handleTencentProxy(body: Record<string, unknown>) {
 }
 
 export const handler: Handler = async (event) => {
-  const route = String(event.queryStringParameters?.path || '').replace(/^\/+/, '');
+  const route = getRoute(event);
   const body = event.body ? JSON.parse(event.body) as Record<string, unknown> : {};
 
   if (route === 'health') {
@@ -269,3 +269,22 @@ export const handler: Handler = async (event) => {
 
   return json(404, { error: 'Not found', route });
 };
+
+function getRoute(event: Parameters<Handler>[0]) {
+  const queryRoute = event.queryStringParameters?.path;
+  if (queryRoute) return String(queryRoute).replace(/^\/+/, '');
+
+  const pathRoute = event.path
+    .replace(/^\/api\/?/, '')
+    .replace(/^\/\.netlify\/functions\/api\/?/, '');
+  if (pathRoute && pathRoute !== event.path) return pathRoute.replace(/^\/+/, '');
+
+  const rawUrl = event.rawUrl || '';
+  const marker = '/api/';
+  const markerIndex = rawUrl.indexOf(marker);
+  if (markerIndex >= 0) {
+    return rawUrl.slice(markerIndex + marker.length).split('?')[0].replace(/^\/+/, '');
+  }
+
+  return '';
+}

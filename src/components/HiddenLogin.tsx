@@ -80,21 +80,52 @@ export default function HiddenLogin({ onLogin, onLogout }: HiddenLoginProps) {
     setIsLoading(true);
 
     const tryApiLogin = async () => {
+      const route = isRegistering ? 'auth/register' : 'auth/login';
+      const payload = JSON.stringify({ email, password, displayName });
+      const endpoints = [
+        `/api/${route}`,
+        `/.netlify/functions/api?path=${encodeURIComponent(route)}`,
+      ];
+      let lastMessage = '';
+
       try {
-        const response = await fetch(isRegistering ? '/api/auth/register' : '/api/auth/login', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, password, displayName })
-        });
-        const data = await response.json();
-        if (data.success) {
+        let data: { success?: boolean; user?: { isAdmin?: boolean } & Record<string, unknown>; token?: string; message?: string; error?: string } | null = null;
+        for (const endpoint of endpoints) {
+          try {
+            const response = await fetch(endpoint, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: payload,
+            });
+            const contentType = response.headers.get('content-type') || '';
+            const parsed = contentType.includes('application/json')
+              ? await response.json()
+              : { success: false, message: await response.text() };
+
+            if (parsed.success || response.status === 401 || response.status === 409) {
+              data = parsed;
+              break;
+            }
+
+            lastMessage = parsed.message || parsed.error || `接口 ${endpoint} 返回 ${response.status}`;
+          } catch (endpointError) {
+            lastMessage = endpointError instanceof Error ? endpointError.message : String(endpointError);
+          }
+        }
+
+        if (!data) {
+          setError(`服务器连接失败：登录接口未响应。${lastMessage}`);
+          return false;
+        }
+
+        if (data.success && data.user) {
           // 保存 Session 到本地，供没有 VPN 的同事下次使用
           localStorage.setItem('auth_user', JSON.stringify(data.user));
           if (data.token) localStorage.setItem('auth_token', data.token);
           
           if (onLoginRef.current) {
             // 注意：API 登录没有真实的 Firebase User 对象，我们模拟一个最小化的
-            onLoginRef.current(data.user as unknown as FirebaseUser, data.user.isAdmin);
+            onLoginRef.current(data.user as unknown as FirebaseUser, data.user.isAdmin === true);
           }
           setUser(data.user as unknown as FirebaseUser);
           setIsAdmin(data.user.isAdmin === true);
@@ -104,11 +135,11 @@ export default function HiddenLogin({ onLogin, onLogout }: HiddenLoginProps) {
           setDisplayName('');
           return true;
         } else {
-          setError(data.message || '通过中转服务器登录失败');
+          setError(data.message || data.error || '通过中转服务器登录失败');
           return false;
         }
-      } catch {
-        setError('服务器连接失败：请确认已通过 npm run dev / npm start 启动后端，或线上部署使用的是 Node Web Service 而不是纯静态页面。');
+      } catch (error) {
+        setError(`服务器连接失败：${error instanceof Error ? error.message : '请检查部署接口'}`);
         return false;
       }
     };
