@@ -3,19 +3,15 @@ import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import crypto from 'crypto';
 import fs from 'fs';
-import admin from 'firebase-admin';
-import { getFirestore, Timestamp, Query, OrderByDirection, QueryDocumentSnapshot } from 'firebase-admin/firestore';
-import firebaseConfig from './firebase-applet-config.json' with { type: 'json' };
-
-// 初始化 Firebase Admin
-// 因为运行在 Google Cloud 环境，可以使用默认凭据
-const firebaseAdminApp = admin.initializeApp({
-  projectId: firebaseConfig.projectId,
-});
-
-const adminDb = getFirestore(firebaseAdminApp, firebaseConfig.firestoreDatabaseId);
 
 const presetUsers = [
+  {
+    email: 'admin@fairino.com',
+    password: 'FairinoAdmin2024!',
+    uid: 'admin_fairino_local_uid',
+    displayName: '管理员',
+    isAdmin: true,
+  },
   {
     email: 'zhouqiang@fairino.com',
     password: '123456!',
@@ -41,6 +37,98 @@ const presetUsers = [
     displayName: '宋昊睿',
   },
 ];
+
+type LocalDoc = Record<string, unknown>;
+type LocalDb = Record<string, Record<string, LocalDoc>>;
+
+function nowTimestamp() {
+  const millis = Date.now();
+  return {
+    _seconds: Math.floor(millis / 1000),
+    _nanoseconds: (millis % 1000) * 1_000_000,
+  };
+}
+
+function getLocalDbPath() {
+  return path.join(process.cwd(), '.local-data', 'db.json');
+}
+
+function readLocalDb(): LocalDb {
+  const dbPath = getLocalDbPath();
+  if (!fs.existsSync(dbPath)) return {};
+
+  try {
+    return JSON.parse(fs.readFileSync(dbPath, 'utf8')) as LocalDb;
+  } catch (error) {
+    console.error('Local DB read failed:', error);
+    return {};
+  }
+}
+
+function writeLocalDb(db: LocalDb) {
+  const dbPath = getLocalDbPath();
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  fs.writeFileSync(dbPath, JSON.stringify(db, null, 2), 'utf8');
+}
+
+function ensureLocalDb() {
+  const db = readLocalDb();
+  db.users ||= {};
+  db.customers ||= {};
+  db.products ||= {};
+
+  let changed = false;
+  for (const preset of presetUsers) {
+    if (!db.users[preset.uid]) {
+      db.users[preset.uid] = {
+        uid: preset.uid,
+        email: preset.email,
+        displayName: preset.displayName,
+        isAdmin: preset.isAdmin === true,
+        approved: true,
+        createdAt: nowTimestamp(),
+        lastLoginAt: nowTimestamp(),
+      };
+      changed = true;
+    }
+  }
+
+  if (changed) writeLocalDb(db);
+  return db;
+}
+
+function generateDocId(collection: string) {
+  return `${collection}_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+}
+
+function normalizeFilterValue(value: unknown) {
+  if (value === 'true') return true;
+  if (value === 'false') return false;
+  if (typeof value === 'string' && value.trim() !== '' && !Number.isNaN(Number(value))) {
+    return Number(value);
+  }
+  return value;
+}
+
+function matchesFilters(doc: LocalDoc, filters: Record<string, unknown>) {
+  return Object.entries(filters).every(([key, value]) => {
+    const expected = normalizeFilterValue(value);
+    return doc[key] === expected;
+  });
+}
+
+function sortDocs(docs: LocalDoc[], field?: unknown, direction?: unknown) {
+  if (!field || typeof field !== 'string') return docs;
+  const factor = direction === 'asc' ? 1 : -1;
+  return [...docs].sort((a, b) => {
+    const av = a[field] as string | number | undefined;
+    const bv = b[field] as string | number | undefined;
+    if (av === bv) return 0;
+    if (av === undefined) return 1;
+    if (bv === undefined) return -1;
+    return av > bv ? factor : -factor;
+  });
+}
 
 function loadLocalEnv() {
   const envPath = path.join(process.cwd(), '.env.local');
@@ -81,6 +169,7 @@ function getTencentSignature(secretKey: string, date: string, service: string, s
 
 async function startServer() {
   loadLocalEnv();
+  ensureLocalDb();
 
   const app = express();
   const PORT = 3000;
@@ -88,103 +177,116 @@ async function startServer() {
   // 解析 JSON 体
   app.use(express.json({ limit: '10mb' }));
 
-  // API 路由：Firebase 认证中转 (解决国内网络问题)
+  // API 路由：本地认证。默认不依赖 Firebase/Google，适合大陆无 VPN 环境。
   app.post('/api/auth/login', async (req, res) => {
     const { email, password } = req.body;
-    // 注意：Firebase Admin 并没有直接的 "signInWithPassword" 接口
-    // 我们需要通过 API 密钥请求 Auth 服务端，或者在这里做简单的账号匹配逻辑
-    // 针对 "预置账号" 特殊处理
-    const presetUser = presetUsers.find(user => user.email === email && user.password === password);
-    if (presetUser) {
-      try {
-        const userRef = adminDb.collection('users').where('email', '==', email).limit(1);
-        const snapshot = await userRef.get();
-        let userDoc;
-        if (snapshot.empty) {
-          // 自动创建
-          const newUser = {
-            uid: presetUser.uid,
-            email: presetUser.email,
-            displayName: presetUser.displayName,
-            isAdmin: false,
-            approved: true,
-            createdAt: Timestamp.now(),
-            lastLoginAt: Timestamp.now()
-          };
-          await adminDb.collection('users').doc(newUser.uid).set(newUser);
-          userDoc = newUser;
-        } else {
-          userDoc = snapshot.docs[0].data();
-          await snapshot.docs[0].ref.update({ lastLoginAt: Timestamp.now() });
-        }
-        return res.json({ success: true, user: userDoc });
-      } catch (err) {
-        console.error('Preset user login error:', err);
-        return res.status(500).json({ success: false, message: 'Auth Proxy Error' });
-      }
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    const presetUser = presetUsers.find(user => user.email === normalizedEmail && user.password === password);
+    if (!presetUser) {
+      return res.status(401).json({ success: false, message: '账号或密码错误' });
     }
 
-    // 默认回滚到真正的 Firebase Auth 请求 (在服务器侧发起，不受大陆防火墙影响)
     try {
-      const url = `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${firebaseConfig.apiKey}`;
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, returnSecureToken: true })
-      });
-      const data = await response.json();
-      if (data.error) {
-        return res.status(401).json({ success: false, message: data.error.message });
-      }
-      
-      // 获取用户 Profile
-      const userRef = adminDb.collection('users').doc(data.localId);
-      const userDoc = await userRef.get();
-      
-      res.json({ success: true, user: userDoc.exists ? userDoc.data() : { uid: data.localId, email: data.email }, token: data.idToken });
+      const db = ensureLocalDb();
+      const existingUser = Object.values(db.users).find(user => user.email === normalizedEmail);
+      const userDoc = {
+        uid: presetUser.uid,
+        email: presetUser.email,
+        displayName: presetUser.displayName,
+        isAdmin: presetUser.isAdmin === true,
+        approved: true,
+        createdAt: existingUser?.createdAt || nowTimestamp(),
+        lastLoginAt: nowTimestamp(),
+      };
+      db.users[presetUser.uid] = {
+        ...existingUser,
+        ...userDoc,
+      };
+      writeLocalDb(db);
+      return res.json({ success: true, user: db.users[presetUser.uid], token: `local_${presetUser.uid}` });
     } catch (err) {
-      console.error('Server auth error:', err);
-      res.status(500).json({ success: false, message: 'Server Auth Error' });
+      console.error('Local login error:', err);
+      return res.status(500).json({ success: false, message: '本地登录服务异常' });
     }
   });
 
-  // API 路由：数据库代理
+  app.post('/api/auth/register', async (req, res) => {
+    const { email, password, displayName } = req.body;
+    const normalizedEmail = String(email || '').trim().toLowerCase();
+    if (!normalizedEmail || !password) {
+      return res.status(400).json({ success: false, message: '邮箱和密码不能为空' });
+    }
+
+    const db = ensureLocalDb();
+    const existingUser = Object.values(db.users).find(user => user.email === normalizedEmail);
+    if (existingUser) {
+      return res.status(409).json({ success: false, message: '该邮箱已注册，请直接登录' });
+    }
+
+    const uid = `user_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+    db.users[uid] = {
+      uid,
+      email: normalizedEmail,
+      displayName: displayName || normalizedEmail.split('@')[0],
+      isAdmin: false,
+      approved: false,
+      password,
+      createdAt: nowTimestamp(),
+      lastLoginAt: nowTimestamp(),
+    };
+    writeLocalDb(db);
+    return res.json({ success: true, user: db.users[uid], token: `local_${uid}` });
+  });
+
+  app.post('/api/auth/logout', (_req, res) => {
+    res.json({ success: true });
+  });
+
+  app.post('/api/auth/profile', async (req, res) => {
+    const { uid, email, displayName, isAdmin = false } = req.body;
+    if (!uid || !email) {
+      return res.status(400).json({ success: false, message: 'uid 和 email 不能为空' });
+    }
+
+    const db = ensureLocalDb();
+    const existing = db.users[uid] || {};
+    db.users[uid] = {
+      ...existing,
+      uid,
+      email,
+      displayName: displayName || String(email).split('@')[0],
+      isAdmin: existing.isAdmin === true || isAdmin === true,
+      approved: existing.approved ?? isAdmin === true,
+      createdAt: existing.createdAt || nowTimestamp(),
+      lastLoginAt: nowTimestamp(),
+    };
+    writeLocalDb(db);
+    res.json({ success: true, user: db.users[uid] });
+  });
+
+  // API 路由：本地数据库。默认写入 .local-data/db.json。
   app.get('/api/db/:collection', async (req, res) => {
     try {
       const { collection } = req.params;
       const { _docId, _orderField, _direction, ...filters } = req.query;
-      
+      const db = ensureLocalDb();
+      db[collection] ||= {};
+
       if (_docId) {
-        const doc = await adminDb.collection(collection).doc(_docId as string).get();
-        if (!doc.exists) return res.status(404).json({ error: 'Not found' });
-        return res.json(doc.data());
+        const doc = db[collection][_docId as string];
+        if (!doc) return res.status(404).json({ error: 'Not found' });
+        return res.json(doc);
       }
 
-      let query: Query = adminDb.collection(collection);
-      
-      // 添加过滤条件
-      Object.entries(filters).forEach(([key, val]) => {
-        if (val !== undefined && val !== null) {
-          // 比较时自动尝试转换数字和布尔值
-          let finalVal: string | boolean | number = val as string;
-          if (val === 'true') finalVal = true;
-          else if (val === 'false') finalVal = false;
-          else if (!isNaN(Number(val)) && typeof val === 'string' && val.trim() !== '') finalVal = Number(val);
-          
-          query = query.where(key, '==', finalVal);
-        }
-      });
-
-      if (_orderField) {
-        query = query.orderBy(_orderField as string, (_direction as OrderByDirection) || 'desc');
-      }
-      
-      const snapshot = await query.get();
-      const results = snapshot.docs.map((docSnapshot: QueryDocumentSnapshot) => docSnapshot.data());
+      const results = sortDocs(
+        Object.values(db[collection]).filter(doc => matchesFilters(doc, filters)),
+        _orderField,
+        _direction,
+      );
       res.json(results);
     } catch (err) {
-      console.error('DB Proxy Get Error:', err);
-      res.status(500).json({ error: 'DB Proxy Error' });
+      console.error('DB Get Error:', err);
+      res.status(500).json({ error: 'DB Get Error' });
     }
   });
 
@@ -192,22 +294,26 @@ async function startServer() {
     try {
       const { collection } = req.params;
       const { docId, data } = req.body;
-      
-      if (docId) {
-        await adminDb.collection(collection).doc(docId).set({
-          ...data as Record<string, unknown>,
-          updatedAt: Timestamp.now()
-        }, { merge: true });
-      } else {
-        await adminDb.collection(collection).add({
-          ...data as Record<string, unknown>,
-          createdAt: Timestamp.now()
-        });
-      }
-      res.json({ success: true });
+      const db = ensureLocalDb();
+      db[collection] ||= {};
+
+      const id = docId || generateDocId(collection);
+      const existing = db[collection][id] || {};
+      const now = nowTimestamp();
+      const incoming = (data || {}) as LocalDoc;
+
+      db[collection][id] = {
+        ...existing,
+        ...incoming,
+        id: incoming.id || existing.id || id,
+        createdAt: existing.createdAt || incoming.createdAt || now,
+        updatedAt: now,
+      };
+      writeLocalDb(db);
+      res.json({ success: true, id, data: db[collection][id] });
     } catch (err) {
-      console.error('DB Proxy Write Error:', err);
-      res.status(500).json({ error: 'DB Proxy Write Error' });
+      console.error('DB Write Error:', err);
+      res.status(500).json({ error: 'DB Write Error' });
     }
   });
 
@@ -280,7 +386,7 @@ async function startServer() {
   });
 
   // Vite 中间件处理
-  if (process.env.NODE_ENV !== 'production') {
+  if (process.env.NODE_ENV === 'development') {
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
@@ -297,9 +403,13 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '127.0.0.1', () => {
+  const server = app.listen(PORT, '127.0.0.1', () => {
     console.log(`Server running at http://127.0.0.1:${PORT}`);
   });
+  server.on('error', (error) => {
+    console.error('Server listen error:', error);
+  });
+  globalThis.__fairinoContractServer = server;
 }
 
 startServer();

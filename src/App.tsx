@@ -6,7 +6,6 @@ import {
 import { generateContract as generateSalesContract, ContractData, PartyInfo } from './services/contractGenerator';
 import { generateContract as generateLoanContract } from './services/contractGenerator_loan';
 import { identifyPartyA } from './services/aiService';
-import { logout } from './services/firebase';
 import { User as FirebaseUser } from 'firebase/auth';
 import { LOGO_BASE64 } from './constants';
 import HiddenLogin, { AdminPanel } from './components/HiddenLogin';
@@ -169,6 +168,8 @@ export default function App() {
   }, []);
 
   const handleLogout = useCallback(() => {
+    localStorage.removeItem('auth_user');
+    localStorage.removeItem('auth_token');
     setUser(null);
     setUserProfile(null);
     setIsAdmin(false);
@@ -503,7 +504,7 @@ export default function App() {
                     <p className="text-xs font-bold text-slate-900 whitespace-nowrap">{user.displayName || user.email}</p>
                     <p className="text-[10px] text-slate-400">{isAdmin ? '管理员' : '已登录'}</p>
                   </div>
-                  <button onClick={logout} className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all" title="退出登录">
+                  <button onClick={handleLogout} className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all" title="退出登录">
                     <LogOut className="w-5 h-5" />
                   </button>
                 </div>
@@ -535,7 +536,7 @@ export default function App() {
               <p className="text-sm text-slate-400 mb-8">
                 请联系管理员授权通过，在此期间功能暂时不可用。
               </p>
-              <button onClick={logout} className="px-6 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl transition-all">
+              <button onClick={handleLogout} className="px-6 py-2 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold rounded-xl transition-all">
                 退出登录
               </button>
             </div>

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { 
   X, Shield, UserCheck, UserX, Clock, Search, Mail, Calendar, User, CheckCircle2, AlertCircle, Loader2
 } from 'lucide-react';

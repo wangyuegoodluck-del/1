@@ -1,24 +1,14 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Lock, X, User, LogOut, Settings, Shield, Users, Package, Plus, Trash2, Search } from 'lucide-react';
-import { auth, db } from '../services/firebase';
-import { onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
-import { loginWithEmail, logout, registerWithEmail } from '../services/firebase';
-import { doc, setDoc, Timestamp, updateDoc } from 'firebase/firestore';
-import { isCurrentUserAdmin, UserProfile, subscribeToUserProfile, CatalogProduct, addCatalogProduct, updateCatalogProduct, deleteCatalogProduct, subscribeToCatalogProducts, subscribeToAllUsers, updateUserApproval } from '../services/userService';
+import { Lock, X, User, LogOut, Settings, Shield, Users, Package, Plus, Trash2, Search, CheckCircle2 } from 'lucide-react';
+import type { User as FirebaseUser } from 'firebase/auth';
+import { isCurrentUserAdmin, UserProfile, subscribeToUserProfile, CatalogProduct, addCatalogProduct, updateCatalogProduct, deleteCatalogProduct, subscribeToCatalogProducts, subscribeToAllUsers, updateUserApproval, updateUserAdmin } from '../services/userService';
 import { DEFAULT_PRODUCT_CATALOG } from '../services/defaultProducts';
 
 interface HiddenLoginProps {
   onLogin?: (user: FirebaseUser, isAdmin: boolean) => void;
   onLogout?: () => void;
 }
-
-const PRESET_LOGIN_EMAILS = [
-  'zhouqiang@fairino.com',
-  'liwei@fairino.com',
-  'zhangmin@fairino.com',
-  'songhaorui@fairino.com',
-];
 
 export default function HiddenLogin({ onLogin, onLogout }: HiddenLoginProps) {
   const [isVisible, setIsVisible] = useState(false);
@@ -36,7 +26,7 @@ export default function HiddenLogin({ onLogin, onLogout }: HiddenLoginProps) {
   const [displayName, setDisplayName] = useState('');
   const [error, setError] = useState('');
 
-  // 使用 ref 持有回调，避免 useEffect 依赖外部函数引用变化导致重复订阅
+// 使用 ref 持有回调，避免 useEffect 依赖外部函数引用变化导致重复订阅
   const onLoginRef = useRef(onLogin);
   const onLogoutRef = useRef(onLogout);
   useEffect(() => { onLoginRef.current = onLogin; }, [onLogin]);
@@ -48,39 +38,29 @@ export default function HiddenLogin({ onLogin, onLogout }: HiddenLoginProps) {
     return () => clearTimeout(timer);
   }, []);
 
-  // Auth state listener — 空依赖数组，只注册一次
+  // 本地 Session 恢复：大陆无 VPN 模式下不再依赖 Firebase Auth 监听。
   useEffect(() => {
     let isMounted = true;
-    const unsubscribe = onAuthStateChanged(auth, async (u) => {
-      if (!isMounted) return;
-      setUser(u);
-      if (u) {
-        try {
-          const admin = await isCurrentUserAdmin();
-          if (!isMounted) return;
-          setIsAdmin(admin);
-          onLoginRef.current?.(u, admin);
-        } catch (err) {
-          console.warn('Failed to check admin status:', err);
-          if (isMounted) onLoginRef.current?.(u, false);
-        }
-        // Update last login (best-effort, non-blocking)
-        try {
-          const userRef = doc(db, 'users', u.uid);
-          await setDoc(userRef, {
-            lastLoginAt: Timestamp.now(),
-          }, { merge: true });
-        } catch (err) {
-          console.warn('Failed to update last login:', err);
-        }
-      } else {
+    const restoreSession = async () => {
+      const savedUser = localStorage.getItem('auth_user');
+      if (!savedUser) return;
+
+      try {
+        const u = JSON.parse(savedUser) as FirebaseUser;
         if (!isMounted) return;
-        setIsAdmin(false);
-        setUserProfile(null);
-        onLogoutRef.current?.();
+        setUser(u);
+        const admin = await isCurrentUserAdmin();
+        if (!isMounted) return;
+        setIsAdmin(admin);
+        onLoginRef.current?.(u, admin);
+      } catch {
+        localStorage.removeItem('auth_user');
+        localStorage.removeItem('auth_token');
       }
-    });
-    return () => { isMounted = false; unsubscribe(); };
+    };
+
+    restoreSession();
+    return () => { isMounted = false; };
   }, []);
 
   // Subscribe to user profile
@@ -101,10 +81,10 @@ export default function HiddenLogin({ onLogin, onLogout }: HiddenLoginProps) {
 
     const tryApiLogin = async () => {
       try {
-        const response = await fetch('/api/auth/login', {
+        const response = await fetch(isRegistering ? '/api/auth/register' : '/api/auth/login', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, password })
+          body: JSON.stringify({ email, password, displayName })
         });
         const data = await response.json();
         if (data.success) {
@@ -116,7 +96,12 @@ export default function HiddenLogin({ onLogin, onLogout }: HiddenLoginProps) {
             // 注意：API 登录没有真实的 Firebase User 对象，我们模拟一个最小化的
             onLoginRef.current(data.user as unknown as FirebaseUser, data.user.isAdmin);
           }
+          setUser(data.user as unknown as FirebaseUser);
+          setIsAdmin(data.user.isAdmin === true);
           setShowPanel(false);
+          setEmail('');
+          setPassword('');
+          setDisplayName('');
           return true;
         } else {
           setError(data.message || '通过中转服务器登录失败');
@@ -129,56 +114,10 @@ export default function HiddenLogin({ onLogin, onLogout }: HiddenLoginProps) {
     };
 
     try {
-      if (PRESET_LOGIN_EMAILS.includes(email.trim().toLowerCase())) {
-        // 预置账号强制走 API，避免本地没有真实 Firebase Auth 账号时登录失败
-        await tryApiLogin();
-        return;
-      }
-
-      if (isRegistering) {
-        const userCredential = await registerWithEmail(email, password, displayName);
-        // Create user profile in Firestore
-        const userRef = doc(db, 'users', userCredential.user.uid);
-        const now = Timestamp.now();
-        await setDoc(userRef, {
-          uid: userCredential.user.uid,
-          email,
-          displayName: displayName || email.split('@')[0],
-          isAdmin: false,
-          approved: false,
-          createdAt: now,
-          lastLoginAt: now,
-        });
-      } else {
-        await loginWithEmail(email, password);
-        // Update last login
-        if (auth.currentUser) {
-          const userRef = doc(db, 'users', auth.currentUser.uid);
-          await updateDoc(userRef, {
-            lastLoginAt: Timestamp.now(),
-          });
-        }
-      }
-      setShowPanel(false);
-      setEmail('');
-      setPassword('');
-      setDisplayName('');
+      await tryApiLogin();
     } catch (err: unknown) {
       console.error('Auth error:', err);
-      const authError = err as { message?: string; code?: string };
-      
-      // 如果是网络错误，自动尝试通过中转服务器登录
-      if (authError.message?.includes('network-request-failed') || authError.code?.includes('network-error') || authError.code === 'auth/internal-error') {
-        console.log('Firebase blocked detected, trying API fallback...');
-        const success = await tryApiLogin();
-        if (!success && !error) {
-          setError('网络异常 (Firebase 访问受限)。尝试通过中转服务器登录失败，请检查账号密码。');
-        }
-      } else if (authError.code === 'auth/invalid-login-credentials' || authError.code === 'auth/wrong-password' || authError.code === 'auth/user-not-found') {
-        setError('账号或密码错误');
-      } else {
-        setError(authError.message || '登录失败');
-      }
+      setError(err instanceof Error ? err.message : '登录失败');
     } finally {
       setIsLoading(false);
     }
@@ -186,7 +125,12 @@ export default function HiddenLogin({ onLogin, onLogout }: HiddenLoginProps) {
 
   const handleLogout = async () => {
     try {
-      await logout();
+      localStorage.removeItem('auth_user');
+      localStorage.removeItem('auth_token');
+      setUser(null);
+      setUserProfile(null);
+      setIsAdmin(false);
+      onLogoutRef.current?.();
       setShowPanel(false);
       setShowAdminPanel(false);
     } catch (err) {
@@ -467,14 +411,15 @@ function ProductManagement() {
     precision: 120,
     actions: 120,
   };
+  type ColumnWidths = typeof defaultColumnWidths;
   const [products, setProducts] = useState<CatalogProduct[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [savingProductId, setSavingProductId] = useState<string | null>(null);
-  const [columnWidths, setColumnWidths] = useState(() => {
+  const [columnWidths, setColumnWidths] = useState<ColumnWidths>(() => {
     try {
       const saved = localStorage.getItem('product_column_widths');
-      return saved ? { ...defaultColumnWidths, ...JSON.parse(saved) } : defaultColumnWidths;
+      return saved ? { ...defaultColumnWidths, ...JSON.parse(saved) } as ColumnWidths : defaultColumnWidths;
     } catch {
       return defaultColumnWidths;
     }
@@ -912,6 +857,13 @@ function UserManagement() {
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
+  const currentUserEmail = (() => {
+    try {
+      return JSON.parse(localStorage.getItem('auth_user') || '{}')?.email || '';
+    } catch {
+      return '';
+    }
+  })();
 
   useEffect(() => {
     setLoading(true);
@@ -938,8 +890,7 @@ function UserManagement() {
   const handleToggleAdmin = async (uid: string, currentIsAdmin: boolean) => {
     if (!confirm(`确定要${currentIsAdmin ? '级' : '设为'}管理员吗？`)) return;
     try {
-      const userRef = doc(db, 'users', uid);
-      await updateDoc(userRef, { isAdmin: !currentIsAdmin });
+      await updateUserAdmin(uid, !currentIsAdmin);
     } catch (err) {
       alert('操作失败: ' + (err as Error).message);
     }
@@ -1018,7 +969,7 @@ function UserManagement() {
                       >
                         {u.approved ? '撤回审核' : '通过审核'}
                       </button>
-                      {auth.currentUser?.email === 'admin@fairino.com' && u.email !== 'admin@fairino.com' && (
+                      {currentUserEmail === 'admin@fairino.com' && u.email !== 'admin@fairino.com' && (
                         <button
                           onClick={() => handleToggleAdmin(u.uid, u.isAdmin || false)}
                           className="text-xs px-2 py-1 bg-gray-100 text-gray-600 rounded hover:bg-gray-200"
