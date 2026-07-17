@@ -6,8 +6,12 @@
 
 import { tencentRequest } from './tencentSign';
 
-const SECRET_ID = import.meta.env.VITE_TENCENT_SECRET_ID || '';
-const SECRET_KEY = import.meta.env.VITE_TENCENT_SECRET_KEY || '';
+function getViteEnv(key: string): string {
+  return ((import.meta as unknown as { env?: Record<string, string> }).env?.[key]) || '';
+}
+
+const SECRET_ID = getViteEnv('VITE_TENCENT_SECRET_ID');
+const SECRET_KEY = getViteEnv('VITE_TENCENT_SECRET_KEY');
 
 export interface HunyuanVerifyResult {
   /** 总体校验是否通过 */
