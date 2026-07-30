@@ -447,6 +447,7 @@ function ProductManagement() {
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [savingProductId, setSavingProductId] = useState<string | null>(null);
+  const [isRepairingDefaults, setIsRepairingDefaults] = useState(false);
   const [columnWidths, setColumnWidths] = useState<ColumnWidths>(() => {
     try {
       const saved = localStorage.getItem('product_column_widths');
@@ -487,6 +488,15 @@ function ProductManagement() {
   );
   const visibleProducts = products.length > 0 ? sortByName(filteredProducts) : sortByName(defaultProducts);
   const tableWidth = Object.values(columnWidths).reduce((sum, width) => sum + width, 0);
+
+  const getMissingDefaultProducts = (currentProducts: CatalogProduct[]) => {
+    const savedKeys = new Set(
+      currentProducts.map(product => `${product.name.trim()}|${(product.model || '').trim()}`)
+    );
+    return DEFAULT_PRODUCT_CATALOG.filter(product =>
+      !savedKeys.has(`${product.name.trim()}|${(product.model || '').trim()}`)
+    );
+  };
 
   const resizeColumn = (key: keyof typeof defaultColumnWidths, event: React.MouseEvent<HTMLSpanElement>) => {
     event.preventDefault();
@@ -559,10 +569,15 @@ function ProductManagement() {
       skipName?: string;
       updateName?: string;
       updates?: Partial<CatalogProduct>;
-    } = {}
+    } = {},
+    currentProducts: CatalogProduct[] = []
   ) => {
+    const currentKeys = new Set(
+      currentProducts.map(product => `${product.name.trim()}|${(product.model || '').trim()}`)
+    );
     for (const product of DEFAULT_PRODUCT_CATALOG) {
       if (product.name === options.skipName) continue;
+      if (!options.updateName && currentKeys.has(`${product.name.trim()}|${(product.model || '').trim()}`)) continue;
       await addCatalogProduct({
         ...product,
         ...(product.name === options.updateName ? options.updates : {}),
@@ -570,6 +585,43 @@ function ProductManagement() {
       });
     }
   };
+
+  useEffect(() => {
+    if (loading || products.length === 0 || isRepairingDefaults) return;
+
+    const repairKey = 'product_catalog_default_repaired_once_v1';
+    if (localStorage.getItem(repairKey)) return;
+
+    const missingDefaults = getMissingDefaultProducts(products);
+    if (missingDefaults.length === 0) {
+      localStorage.setItem(repairKey, '1');
+      return;
+    }
+
+    let cancelled = false;
+    const repairDefaults = async () => {
+      setIsRepairingDefaults(true);
+      try {
+        for (const product of missingDefaults) {
+          if (cancelled) return;
+          await addCatalogProduct({
+            ...product,
+            isActive: true,
+          });
+        }
+        localStorage.setItem(repairKey, '1');
+      } catch (error) {
+        console.error('Repair default products error:', error);
+      } finally {
+        if (!cancelled) setIsRepairingDefaults(false);
+      }
+    };
+
+    repairDefaults();
+    return () => {
+      cancelled = true;
+    };
+  }, [loading, products, isRepairingDefaults]);
 
   const handleDefaultUpdate = async (product: typeof DEFAULT_PRODUCT_CATALOG[number], updates: Partial<CatalogProduct>) => {
     try {
@@ -599,6 +651,11 @@ function ProductManagement() {
     }
 
     try {
+      if (products.length === 0) {
+        await saveDefaultProducts();
+      } else {
+        await saveDefaultProducts({}, products);
+      }
       await addCatalogProduct({
         name: newProduct.name.trim(),
         model: newProduct.model.trim() || undefined,
@@ -672,6 +729,11 @@ function ProductManagement() {
         <div className="bg-gray-50 rounded-lg p-8 text-center text-gray-500">
           <div className="animate-spin w-8 h-8 border-2 border-purple-600 border-t-transparent rounded-full mx-auto mb-3" />
           <p>加载中...</p>
+        </div>
+      ) : isRepairingDefaults ? (
+        <div className="bg-gray-50 rounded-lg p-8 text-center text-gray-500">
+          <div className="animate-spin w-8 h-8 border-2 border-purple-600 border-t-transparent rounded-full mx-auto mb-3" />
+          <p>正在恢复默认产品库...</p>
         </div>
       ) : visibleProducts.length === 0 ? (
         <div className="bg-gray-50 rounded-lg p-8 text-center text-gray-500">
