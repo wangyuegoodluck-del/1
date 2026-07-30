@@ -14,7 +14,8 @@ import { DEFAULT_PRODUCT_CATALOG } from './services/defaultProducts';
 import { 
   CustomerWithMemory, 
   subscribeToCustomersMemory, 
-  saveCustomerMemory, 
+  saveOrUpdateCustomerMemory,
+  getCustomersMemory,
   addPurchaseRecord,
   CatalogProduct,
   subscribeToCatalogProducts,
@@ -289,7 +290,7 @@ export default function App() {
       
       // Auto-save to memory if logged in
       if (user && identified.name && identified.taxId) {
-        await saveCustomerMemory({
+        await saveOrUpdateCustomerMemory({
           name: identified.name,
           shortName: identified.shortName,
           taxId: identified.taxId,
@@ -375,7 +376,7 @@ export default function App() {
       // Save customer to memory on generation (仅销售合同保存客户档案)
       if (data.contractType === 'sales' && user && data.partyA.name && data.partyA.taxId) {
         try {
-          const customerId = await saveCustomerMemory({
+          const customerId = await saveOrUpdateCustomerMemory({
             name: data.partyA.name,
             shortName: data.partyA.shortName,
             taxId: data.partyA.taxId,
@@ -415,9 +416,11 @@ export default function App() {
               })),
               totalAmount: totalAmount,
             });
+            setCustomers(await getCustomersMemory());
           }
         } catch (saveError) {
           console.warn('合同已生成，但客户档案或采购记录保存失败:', saveError);
+          alert('合同已下载，但历史记录保存失败：' + (saveError instanceof Error ? saveError.message : '未知错误'));
         }
       }
     } catch (error) { 

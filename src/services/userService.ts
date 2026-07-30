@@ -210,6 +210,67 @@ export async function saveCustomerMemory(customer: Omit<CustomerWithMemory, 'id'
   return id;
 }
 
+function normalizeCustomerKey(value?: string) {
+  return (value || '').replace(/\s+/g, '').trim().toLowerCase();
+}
+
+function mergeContacts(
+  existing: ContactPerson[] = [],
+  incoming: ContactPerson[] = [],
+) {
+  const merged = [...existing];
+  for (const contact of incoming) {
+    const key = `${normalizeCustomerKey(contact.name)}|${normalizeCustomerKey(contact.phone)}`;
+    const exists = merged.some(item =>
+      `${normalizeCustomerKey(item.name)}|${normalizeCustomerKey(item.phone)}` === key
+    );
+    if (!exists && (contact.name || contact.phone)) merged.push(contact);
+  }
+  return merged;
+}
+
+function mergeDeliveryAddresses(
+  existing: DeliveryAddress[] = [],
+  incoming: DeliveryAddress[] = [],
+) {
+  const merged = [...existing];
+  for (const address of incoming) {
+    const key = `${normalizeCustomerKey(address.address)}|${normalizeCustomerKey(address.contactPhone)}`;
+    const exists = merged.some(item =>
+      `${normalizeCustomerKey(item.address)}|${normalizeCustomerKey(item.contactPhone)}` === key
+    );
+    if (!exists && address.address) merged.push(address);
+  }
+  return merged;
+}
+
+export async function saveOrUpdateCustomerMemory(customer: Omit<CustomerWithMemory, 'id' | 'userId' | 'createdAt' | 'updatedAt'>) {
+  const user = requireStoredUser();
+  const filters = scopedCustomerFilter();
+  const allCustomers = await apiPoll<CustomerWithMemory>('customers', filters);
+  const customerTaxId = normalizeCustomerKey(customer.taxId);
+  const customerName = normalizeCustomerKey(customer.name);
+  const existing = allCustomers.find(item => {
+    const sameTaxId = customerTaxId && normalizeCustomerKey(item.taxId) === customerTaxId;
+    const sameName = customerName && normalizeCustomerKey(item.name) === customerName;
+    return sameTaxId || sameName;
+  });
+
+  if (!existing) return saveCustomerMemory(customer);
+
+  await apiSet('customers', existing.id, {
+    ...customer,
+    id: existing.id,
+    userId: existing.userId || user.uid,
+    contacts: mergeContacts(existing.contacts, customer.contacts),
+    deliveryAddresses: mergeDeliveryAddresses(existing.deliveryAddresses, customer.deliveryAddresses),
+    purchaseHistory: existing.purchaseHistory || [],
+    ...(CUSTOMER_HISTORY_SCOPE ? { historyScope: CUSTOMER_HISTORY_SCOPE } : {}),
+    updatedAt: Timestamp.now(),
+  });
+  return existing.id;
+}
+
 export async function updateCustomerMemory(customerId: string, updates: Partial<CustomerWithMemory>) {
   requireStoredUser();
   await apiSet('customers', customerId, {
@@ -234,6 +295,15 @@ export function subscribeToCustomersMemory(callback: (customers: CustomerWithMem
   }, callback);
 }
 
+export async function getCustomersMemory(): Promise<CustomerWithMemory[]> {
+  const user = requireStoredUser();
+  const isAdmin = await isCurrentUserAdmin();
+  const filters = isAdmin
+    ? scopedCustomerFilter()
+    : scopedCustomerFilter({ userId: user.uid });
+  return apiPoll<CustomerWithMemory>('customers', filters);
+}
+
 export async function getCustomerMemory(customerId: string): Promise<CustomerWithMemory | null> {
   const user = requireStoredUser();
   try {
@@ -255,9 +325,13 @@ export async function addPurchaseRecord(customerId: string, record: Omit<Purchas
     ...record,
     id: Date.now().toString(),
   };
+  const existingHistory = customer.purchaseHistory || [];
+  const withoutSameContract = record.contractNumber
+    ? existingHistory.filter(item => item.contractNumber !== record.contractNumber)
+    : existingHistory;
 
   await apiSet('customers', customerId, {
-    purchaseHistory: [...(customer.purchaseHistory || []), newRecord],
+    purchaseHistory: [...withoutSameContract, newRecord],
     updatedAt: Timestamp.now(),
   });
 }
