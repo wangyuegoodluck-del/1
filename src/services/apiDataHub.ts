@@ -115,7 +115,7 @@ export async function apiPoll<T>(collection: string, params: Record<string, unkn
     const data = await apiGet(collection, params);
     return Array.isArray(data) ? (data as T[]) : [data as T];
   } catch (err) {
-    console.error('apiPoll failed:', err);
+    console.warn('apiPoll failed:', err);
     return [];
   }
 }

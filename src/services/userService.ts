@@ -1,7 +1,8 @@
 import { Timestamp } from 'firebase/firestore';
-import { apiGet, apiSet, apiPoll } from './apiDataHub';
+import { apiGet, apiSet, apiPoll, deepConvertTimestamps } from './apiDataHub';
 
 const CUSTOMER_HISTORY_SCOPE = (import.meta.env.VITE_CUSTOMER_HISTORY_SCOPE || '').trim();
+const LOCAL_CUSTOMERS_KEY = 'fairino_customer_memory_backup_v1';
 
 export interface UserProfile {
   uid: string;
@@ -101,11 +102,106 @@ function requireStoredUser() {
   return user;
 }
 
+function canUseLocalStorage() {
+  return typeof localStorage !== 'undefined';
+}
+
+function readLocalCustomers(): CustomerWithMemory[] {
+  if (!canUseLocalStorage()) return [];
+  try {
+    const saved = localStorage.getItem(LOCAL_CUSTOMERS_KEY);
+    if (!saved) return [];
+    const parsed = JSON.parse(saved) as unknown;
+    const customers = Array.isArray(parsed) ? parsed : [];
+    return deepConvertTimestamps(customers) as CustomerWithMemory[];
+  } catch (error) {
+    console.warn('读取本地历史备份失败:', error);
+    return [];
+  }
+}
+
+function writeLocalCustomers(customers: CustomerWithMemory[]) {
+  if (!canUseLocalStorage()) return;
+  try {
+    localStorage.setItem(LOCAL_CUSTOMERS_KEY, JSON.stringify(customers));
+  } catch (error) {
+    console.warn('写入本地历史备份失败:', error);
+  }
+}
+
 function scopedCustomerFilter(base: Record<string, unknown> = {}) {
   return {
     ...base,
     ...(CUSTOMER_HISTORY_SCOPE ? { historyScope: CUSTOMER_HISTORY_SCOPE } : {}),
   };
+}
+
+function customerMatchesCurrentScope(customer: CustomerWithMemory, user: { uid: string }, isAdmin: boolean) {
+  const scopeMatches = !CUSTOMER_HISTORY_SCOPE || !customer.historyScope || customer.historyScope === CUSTOMER_HISTORY_SCOPE;
+  const userMatches = isAdmin || !customer.userId || customer.userId === user.uid;
+  return scopeMatches && userMatches;
+}
+
+function customerIdentityKey(customer: Pick<CustomerWithMemory, 'id' | 'taxId' | 'name'>) {
+  if (customer.taxId) return `tax:${normalizeCustomerKey(customer.taxId)}`;
+  if (customer.name) return `name:${normalizeCustomerKey(customer.name)}`;
+  return `id:${customer.id}`;
+}
+
+function mergePurchaseHistory(
+  existing: PurchaseRecord[] = [],
+  incoming: PurchaseRecord[] = [],
+) {
+  const byContract = new Map<string, PurchaseRecord>();
+  [...existing, ...incoming].forEach((record) => {
+    const key = record.contractNumber || record.id;
+    byContract.set(key, record);
+  });
+  return [...byContract.values()].sort((a, b) =>
+    (b.date?.toMillis?.() || 0) - (a.date?.toMillis?.() || 0)
+  );
+}
+
+function mergeCustomer(existing: CustomerWithMemory, incoming: CustomerWithMemory): CustomerWithMemory {
+  return {
+    ...existing,
+    ...incoming,
+    id: existing.id || incoming.id,
+    userId: existing.userId || incoming.userId,
+    contacts: mergeContacts(existing.contacts, incoming.contacts),
+    deliveryAddresses: mergeDeliveryAddresses(existing.deliveryAddresses, incoming.deliveryAddresses),
+    purchaseHistory: mergePurchaseHistory(existing.purchaseHistory, incoming.purchaseHistory),
+    createdAt: existing.createdAt || incoming.createdAt,
+    updatedAt: incoming.updatedAt || existing.updatedAt,
+  };
+}
+
+function mergeCustomerLists(...lists: CustomerWithMemory[][]) {
+  const byKey = new Map<string, CustomerWithMemory>();
+  lists.flat().forEach((customer) => {
+    const key = customerIdentityKey(customer);
+    const existing = byKey.get(key);
+    byKey.set(key, existing ? mergeCustomer(existing, customer) : customer);
+  });
+  return [...byKey.values()].sort((a, b) => a.name.localeCompare(b.name, 'zh-CN'));
+}
+
+function upsertLocalCustomer(customer: CustomerWithMemory) {
+  const current = readLocalCustomers();
+  writeLocalCustomers(mergeCustomerLists(current, [customer]));
+}
+
+function updateLocalPurchaseRecord(customerId: string, record: PurchaseRecord) {
+  const current = readLocalCustomers();
+  const next = current.map((customer) => {
+    if (customer.id !== customerId) return customer;
+    return {
+      ...customer,
+      purchaseHistory: mergePurchaseHistory(customer.purchaseHistory, [record]),
+      updatedAt: Timestamp.now(),
+    };
+  });
+  writeLocalCustomers(next);
 }
 
 function subscribeByPolling<T>(
@@ -206,7 +302,12 @@ export async function saveCustomerMemory(customer: Omit<CustomerWithMemory, 'id'
     updatedAt: now,
   };
 
-  await apiSet('customers', id, customerData);
+  upsertLocalCustomer(customerData);
+  try {
+    await apiSet('customers', id, customerData);
+  } catch (error) {
+    console.warn('客户已保存到本地历史备份，服务器保存失败:', error);
+  }
   return id;
 }
 
@@ -246,8 +347,7 @@ function mergeDeliveryAddresses(
 
 export async function saveOrUpdateCustomerMemory(customer: Omit<CustomerWithMemory, 'id' | 'userId' | 'createdAt' | 'updatedAt'>) {
   const user = requireStoredUser();
-  const filters = scopedCustomerFilter();
-  const allCustomers = await apiPoll<CustomerWithMemory>('customers', filters);
+  const allCustomers = await getCustomersMemory();
   const customerTaxId = normalizeCustomerKey(customer.taxId);
   const customerName = normalizeCustomerKey(customer.name);
   const existing = allCustomers.find(item => {
@@ -258,7 +358,7 @@ export async function saveOrUpdateCustomerMemory(customer: Omit<CustomerWithMemo
 
   if (!existing) return saveCustomerMemory(customer);
 
-  await apiSet('customers', existing.id, {
+  const updatedCustomer = {
     ...customer,
     id: existing.id,
     userId: existing.userId || user.uid,
@@ -267,12 +367,29 @@ export async function saveOrUpdateCustomerMemory(customer: Omit<CustomerWithMemo
     purchaseHistory: existing.purchaseHistory || [],
     ...(CUSTOMER_HISTORY_SCOPE ? { historyScope: CUSTOMER_HISTORY_SCOPE } : {}),
     updatedAt: Timestamp.now(),
-  });
+    createdAt: existing.createdAt || Timestamp.now(),
+  } as CustomerWithMemory;
+
+  upsertLocalCustomer(updatedCustomer);
+  try {
+    await apiSet('customers', existing.id, updatedCustomer);
+  } catch (error) {
+    console.warn('客户已更新到本地历史备份，服务器更新失败:', error);
+  }
   return existing.id;
 }
 
 export async function updateCustomerMemory(customerId: string, updates: Partial<CustomerWithMemory>) {
   requireStoredUser();
+  const localCustomers = readLocalCustomers();
+  const localCustomer = localCustomers.find(customer => customer.id === customerId);
+  if (localCustomer) {
+    upsertLocalCustomer({
+      ...localCustomer,
+      ...updates,
+      updatedAt: Timestamp.now(),
+    });
+  }
   await apiSet('customers', customerId, {
     ...updates,
     updatedAt: Timestamp.now(),
@@ -286,13 +403,7 @@ export function subscribeToCustomersMemory(callback: (customers: CustomerWithMem
     return () => {};
   }
 
-  return subscribeByPolling(async () => {
-    const isAdmin = await isCurrentUserAdmin();
-    const filters = isAdmin
-      ? scopedCustomerFilter()
-      : scopedCustomerFilter({ userId: user.uid });
-    return apiPoll<CustomerWithMemory>('customers', filters);
-  }, callback);
+  return subscribeByPolling(() => getCustomersMemory(), callback);
 }
 
 export async function getCustomersMemory(): Promise<CustomerWithMemory[]> {
@@ -301,7 +412,12 @@ export async function getCustomersMemory(): Promise<CustomerWithMemory[]> {
   const filters = isAdmin
     ? scopedCustomerFilter()
     : scopedCustomerFilter({ userId: user.uid });
-  return apiPoll<CustomerWithMemory>('customers', filters);
+  const serverCustomers = await apiPoll<CustomerWithMemory>('customers', filters);
+  const localCustomers = readLocalCustomers()
+    .filter(customer => customerMatchesCurrentScope(customer, user, isAdmin));
+  const mergedCustomers = mergeCustomerLists(serverCustomers, localCustomers);
+  if (mergedCustomers.length > 0) writeLocalCustomers(mergedCustomers);
+  return mergedCustomers;
 }
 
 export async function getCustomerMemory(customerId: string): Promise<CustomerWithMemory | null> {
@@ -318,7 +434,13 @@ export async function getCustomerMemory(customerId: string): Promise<CustomerWit
 
 export async function addPurchaseRecord(customerId: string, record: Omit<PurchaseRecord, 'id'>) {
   requireStoredUser();
-  const customer = await apiGet('customers', customerId) as CustomerWithMemory;
+  const localCustomer = readLocalCustomers().find(customer => customer.id === customerId);
+  let customer = localCustomer;
+  try {
+    customer = await apiGet('customers', customerId) as CustomerWithMemory;
+  } catch (error) {
+    console.warn('服务器客户读取失败，将使用本地历史备份:', error);
+  }
   if (!customer) throw new Error('Customer not found');
 
   const newRecord: PurchaseRecord = {
@@ -330,10 +452,15 @@ export async function addPurchaseRecord(customerId: string, record: Omit<Purchas
     ? existingHistory.filter(item => item.contractNumber !== record.contractNumber)
     : existingHistory;
 
-  await apiSet('customers', customerId, {
-    purchaseHistory: [...withoutSameContract, newRecord],
-    updatedAt: Timestamp.now(),
-  });
+  updateLocalPurchaseRecord(customerId, newRecord);
+  try {
+    await apiSet('customers', customerId, {
+      purchaseHistory: [...withoutSameContract, newRecord],
+      updatedAt: Timestamp.now(),
+    });
+  } catch (error) {
+    console.warn('合同记录已保存到本地历史备份，服务器保存失败:', error);
+  }
 }
 
 export async function exportContractDataCSV() {
@@ -341,7 +468,7 @@ export async function exportContractDataCSV() {
   const adminStatus = await isCurrentUserAdmin();
   if (!adminStatus) throw new Error('仅限管理员操作');
 
-  const allCustomers = await apiPoll<CustomerWithMemory>('customers', scopedCustomerFilter());
+  const allCustomers = await getCustomersMemory();
   const rows: string[] = [];
   rows.push(['合同编号', '签订日期', '客户名称', '税号', '总金额', '产品明细', '经办人ID'].join(','));
 
